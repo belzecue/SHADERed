@@ -1,10 +1,165 @@
+[v1.4]
++ web version of SHADERed: https://shadered.org
++ add 'Browse online' window -> install plugins, themes & shaders through the application
++ add "Check for plugin updates on startup" option
++ add File -> Open Recent
++ hardware mouse cursors
++ fix "Save As" for projects that use textures
++ fix render state saving
++ fix text editor windows not being resizable
++ fix file dialog search
++ fix Gray theme's comments
+
+[v1.3.6]
++ [DEBUGGER] add immediate window
++ [DEBUGGER] add watches
++ [DEBUGGER] add conditional breakpoints
++ [DEBUGGER] add a feature that executes expressions on hover
++ [DEBUGGER] add color preview for vec3 and vec4 variables
++ add code snippets (located in Options)
++ add a feature that allows exporting images, textures & render textures to an image file
++ add ability to disable compute pass
++ add ability to update image's content from a loaded texture
++ add markers to text editor's scrollbar
++ add "Auto indent on paste" option
++ add IsSavingToFile system variable
++ add custom file dialogs
++ add ability to add multiple textures to project at once
++ add KeyboardTexture description in Help -> Information
++ implement IPlugin2
++ redesign "Output" window
++ fix text editor's "Find and replace" feature
++ fix a bug that would crash SHADERed when using multiple compute shaders
++ fix a bug that would crash SHADERed when deleting a buffer
++ fix a bug that would crash SHADERed when setting FPS limit to 0 while the FPS limit is applied to whole application
++ fix a bug that would add textures to Shader Pass' variables when using "auto variables" feature
++ fix a bug that caused SHADERed not to apply 'system value' if a variable previously used a function
++ fix cubemaps
++ fix cubemap example
++ fix a bug that would incorrectly report an error when exporting project to a C++ file
++ fix a bug that would add some themes two times to the theme list in options
++ fix a bug that wouldn't sync breakpoint's state when toggling it through the "Breakpoints" window
++ remove "Create shader file" menu item
++ rename "Active autocomplete" option to "Continuous autocomplete"
+
+[v1.3.5]
++ plugin API v1
++ add a feature that automatically detects and adds uniforms to variable manager
++ add "Active autocomplete" option
++ add user defined functions, variables & structures to text editor's autocomplete
++ add KeyboardTexture object
++ add BreakpointDisabled, UserFunction, UserType, UniformVariable, GlobalVariable, LocalVariable, FunctionArgument entries to TextEditor's theme
++ add "Syntax highlighting" option
++ add SHADERED_WEB, SHADERED_DESKTOP & SHADERED_VERSION preprocessor definitions to shaders
++ add Preview.ToggleCursorVisibility, Preview.ToggleMouseLock & Preview.ToggleTimePause shortcuts
++ add more information to the "Stats" page
++ add ability to reload texture objects
++ plugins are backward and forward compatible
++ plugins can implement their own shader language & editor
++ improve the "auto recompile" feature
++ fix text editor's ui scaling
++ fix HLSL geometry shaders
++ fix a bug that caused SHADERed to crash when deleting render textures
++ fix a bug that sometimes caused SHADERed to crash when deleting shader pass item
++ fix a bug that caused deleted plugins to stay in the "Not loaded" list in options
++ fix a bug that allowed user to create objects without a name
++ fix a bug that caused SHADERed to crash when debugging a shader that uses some image functions
++ fix cubemap saving
++ fix text editor's "Save changes" popup
++ fix "Autocomplete" option
++ fix "Brace completion"
++ fix mouse wrapping
++ rename "Recompile shader every 200ms" to "Recompile shader on content change"
++ rename "Smart predictions" to "Autocomplete"
+
+[v1.3.4]
++ replace ShaderDebugger with SPIRV-VM (introduces significant improvements to the SHADERed's debugger)
++ add pixel outline to debugger's overlay
++ add debugger overlay to render texture's preview
++ add Stats page (currently only shows SPIR-V)
++ add "Auto fetch" option
++ add "Primitive outline" & "Pixel outline" options
++ add a feature that automatically creates shader files when creating a shader pass
++ add line numbers in the "Function stack" window
++ add statusbar to render texture's preview
++ add new templates (QuadHLSL and QuadGLSL)
++ primitive's outline is now shown even after zooming in when paused and debugging
++ changing properties in Save Preview -> Advanced should now accordingly update the preview window
++ use glslang for error messages
++ use more powerful GPU by default (NvOptimusEnablement & AmdPowerXpressRequestHighPerformance)
++ double clicking on an object in the "Objects" window now opens its preview
++ make it possible to pick pixels on the render texture's preview window
++ show pixel coordinates in "Pixel Inspect" window
++ update text editor's light theme (better current line and "selection" colors)
++ reset zoom on project load
++ pause music & audio shader when preview is paused
++ [DEBUGGER] now works with buffers, 3D textures and cubemaps
++ [DEBUGGER] now works with VertexBuffer items
++ [DEBUGGER] add support for derivative functions
++ remove "Immediate" window, "Watches" & conditional breakpoints
++ fix a bug where buffer objects couldn't be bound to vertex/pixel shaders
++ fix (render) texture's preview alignment
++ fix (render) texture's preview magnifier
++ fix gizmo
++ fix VertexBuffer picking + bounding box
++ fix 3D model picking
++ fix "Step Out" (it's now possible to use "Step In" multiple times on the same line)
++ fix a bug that caused breakpoints to duplicate when a new line is added
++ fix a bug that caused SHADERed to change current time after a render to file even if user didn't change it
++ fix a bug that caused SHADERed to crash when deleting a texture that's open in properties
++ fix a bug that caused magnifier not to zoom sometimes
++ fix a bug that made it possible to open preview for the same object several times
++ fix a bug that caused debugger to produce wrong numbers when it is rendered to the same render texture multiple times in the project
++ fix a bug that caused buffer to stay bound to compute pass even after it has been unbound
++ fix buffer's "load data from 3D model"
++ fix text editor's UI when user horizontally scrolls
++ fix a bug that would apply user's custom render states to the magnifier UI
++ fix TextEditor::EnsureCursorVisible()
+
+[v1.3.3]
++ add VertexBuffer
++ add command line arguments
++ add an option to pause buffer preview
++ add an option to load buffer data from texture, 3D models and regular files
++ add horizontal scrolling with mouse cursor while selecting text
++ add SHIFT + left click to select text
++ add color preview to vec3 and vec4 shader variables
++ line numbers & breakpoints in text editor should now be "pinned" to the left side
++ fix a bug that unfocused text editor on AltGr key press
++ fix a bug that caused SHADERed to crash when parsing error messages
++ fix a bug that caused SHADERed to crash when using ObjectProperty variables
++ fix a bug that caused SHADERed to crash when a font file didn't exist
++ fix a bug that caused SHADERed sometimes to crash after pressing "Change Variables" button
++ fix a bug that caused variable values to get mixed up sometimes
++ fix a bug that caused preview window to sometimes go blank when using an external text editor
++ fix a bug that caused "Save As" file dialog to open twice when saving templates
++ fix a bug caused by deleting variables used in the "Change Variables" popup
++ fix gizmo
++ fix file dialogs
++ fix fps limit options
++ fix line highlighting in the text editor
++ fix plane and circle normals
+
+[v1.3.2]
++ add texture properties
++ add shader variables that point to pipeline item properties
++ add a splash screen
++ add "Changelog" popup which shows up on startup after an update
++ add "Show tips on startup" option
++ add "This will unassign Shortcut.ID" popup when changing shortcuts
++ fix ScreenQuad position and size on other RTs
++ fix a bug that caused SHADERed to crash when clicking on shader variable function list combobox
+
 [v1.3.1]
 + add confirmation dialog when deleting a shader pass item
++ add CTRL + scroll to change text editor font size
 + fix font resizing/changing
++ fix a bug where caret would move multiple characters after pressing backspace
 + fix picking with SHIFT + A
 + fix picking scaled 3D models
 + fix a bug where SHADERed would sometimes block on exit on Linux
-+ fix for a bug where caret would move multiple characters on backspace on a line with a \t
++ fix UI scaling
++ DPI awareness
 + moving items up/down now counts as a project modification
 + resizing render textures now counts as a project modification
 + remove MatrixShadow and MatrixReflect

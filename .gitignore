@@ -1,35 +1,58 @@
-./Debug*
-install_manifest.txt
-./Release*
-*.vcxproj.*
-.vs
-.vscode
-vNext.txt
-settings.ini
-examples/GLSLtest
-examples/test
-CMakeFiles
-libs/**/Makefile
-libs/**/*.a
-libs/**/*.cmake
-libs/**/bin
-libs/**/*.tcl
-cmake_install.cmake
+# IDE directories
+.vs/
+.vscode/
+
+# Generated build system files
+CMakeFiles/
 CMakeCache.txt
+cmake_install.cmake
+install_manifest.txt
+compile_commands.json
+*.vcxproj.*
+VSProject
+vsproject32
+Makefile
+libs/**/*.cmake
+SPIRV-Tools-linkConfig.cmake
+SPIRV-Tools-optConfig.cmake
+SPIRV-Tools-reduceConfig.cmake
+SPIRV-ToolsConfig.cmake
+
+# Generated files
+libs/**/*.tcl
+
+# Compiled binaries
+./Debug*
+./Release*
+*.a
+*.exe
+*.dll
+*.ilk
+*.pdb
 bin/SHADERed
 bin/SHADERed.exe
-bin/log.txt
-bin/*.dll
-bin/*.ilk
-bin/*.pdb
 bin/plugins/*
 bin/Debug
 bin/Release
-VSProject
-vsproject32
-test
-CMakeCache.txt
-Makefile
+lib
+
+# Local application settings
+settings.ini
+bin/data/plugin_settings.ini
+bin/data/preload.dat
+bin/data/workspace.dat
+bin/data/snippets.xml
+bin/data/bookmarks.dat
+
+# Temprorary folder for downloading online shaders
+bin/temp
+
+# Autoupdate information
+bin/current_version.txt
+bin/info.dat
+
+# Logs
+bin/log.txt
 
 # Ignore out-of-source build directory.
 build/

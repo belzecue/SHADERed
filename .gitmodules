@@ -16,6 +16,24 @@
 	path = libs/glslang
 	url = https://github.com/KhronosGroup/glslang
 	ignore = dirty
-[submodule "libs/ShaderDebugger"]
-	path = libs/ShaderDebugger
-	url = https://github.com/dfranx/ShaderDebugger.git
+[submodule "libs/assimp"]
+	path = libs/assimp
+	url = https://github.com/dfranx/assimp.git
+[submodule "libs/SPIRV-VM"]
+	path = libs/SPIRV-VM
+	url = https://github.com/dfranx/SPIRV-VM.git
+	ignore = dirty
+[submodule "libs/spirv-tools"]
+	path = libs/spirv-tools
+	url = https://github.com/KhronosGroup/SPIRV-Tools.git
+	ignore = dirty
+[submodule "libs/spirv-headers"]
+	path = libs/spirv-headers
+	url = https://github.com/KhronosGroup/SPIRV-Headers
+	ignore = dirty
+[submodule "libs/ShaderExpressionParser"]
+	path = libs/ShaderExpressionParser
+	url = https://github.com/dfranx/ShaderExpressionParser
+[submodule "libs/SpvGenTwo"]
+	path = libs/SpvGenTwo
+	url = https://github.com/dfranx/SpvGenTwo

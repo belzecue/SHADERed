@@ -1,20 +1,23 @@
 # SHADERed
 
-SHADERed is a lightweight tool for creating and testing **HLSL and GLSL shaders**. It is easy to use,
-open source, cross-platform (runs on Windows & Linux - HLSL shaders work on both OSes) and -frequently updated with new features.
+SHADERed is a lightweight tool for writing and debugging shaders. It is easy to use,
+open source, cross-platform (runs on Windows, Linux & [Web](https://shadered.org/template) -
+HLSL shaders work on all three platforms) and frequently updated with new features.
 
-<img src="./Misc/Screenshots/IMG2.png"/>
+<img src="https://shadered.org/assets/img/header.png"/>
 
 ## Features
 
 ### Shader debugger
-Shader debugger is the newest addition to SHADERed. It is simple to use - you just pause the preview and select the pixel that you are interested in. After starting the debug process, you will be able to:
+Shader debugger lets you find bugs in your shader. It is simple to use - you just pause
+the preview and select the pixel that you are interested in. After starting the debugger,
+you will be able to:
 * step through your shader code line by line
-* place normal and conditional breakpoints
-* run custom expressions in the Immediate window
-* create watches
+* run immediate expressions
+* add watches
+* place (conditional) breakpoints
 * see list of all variables and their values
-<img src="https://shadered.org/img/gallery/seddbg_watch_vars.gif"/>
+<img src="https://shadered.org/assets/img/debugger.gif"/>
 
 ### Compute & geometry shaders
 You are not limited to vertex and pixel shaders. SHADERed also has support for compute & geometry
@@ -30,20 +33,28 @@ You can also add **compute pass**es alongside normal shader passes:
 </p>
 
 ### Plugin API
-You can develop your own SHADERed plugins (which I currently don't suggest since I still need to change a lot of things) or download and install some plugins.
-To see the plugin API's potential, check out:
-* [GodotShaders](https://github.com/dfranx/PluginGodotShaders) - adds support for Godot's shading language
-* [ShadertoyImporter](https://github.com/dfranx/PluginShadertoy) - makes loading Shadertoy project a super easy task
+You can develop your own SHADERed plugins and upload them to our database
+so that they can be installed through SHADERed: [link](https://shadered.org/addons).
 
-You can download them through the [shadered.org](https://shadered.org/store/plugins.php) website too.
+To see the plugin API's potential, check out:
+* [GodotShaders](https://shadered.org/plugin?id=godotshaders) - adds support for Godot's shading language
+* [ShadertoyImporter](https://shadered.org/plugin?id=shadertoyimport) - makes loading Shadertoy project a super easy task
+* [GIFCapture](https://shadered.org/plugin?id=gifcapture) - SHADERed plugin that adds the ability to capture GIFs
+* [Slang](https://shadered.org/plugin?id=slang) - SHADERed plugins that adds support for Slang shader language
+
+You can download them through the [shadered.org](https://shadered.org/addons) website or through SHADERed's "Browse online" window.
 
 ### See changes instantly
-There are different ways to recompile your shaders. You can press F5 to manually recompile your shader, make it recompile shaders on file modify event (which then allows you to use external editors) or make it recompile changed and nonsaved shaders every 200ms:
+There are different ways to compile your shaders. You can: press F5 to
+manually recompile shader, make it recompile shaders on file modify
+event (which then allows you to use external editors) or make it recompile
+shaders when content in built-in text edtior changes:
 <img src="./Misc/Screenshots/instantresult.gif">
 
 ### Render states
-You can modify rasterizer, blend and depth-stencil states. Using these states you can: turn on wireframe mode,
-disable depth test, use stencil buffer, disable culling, custom blending, etc... All these things help you achieve even more advanced effects.
+You can modify rasterizer, blend and depth-stencil states. Using these states you
+can: turn on wireframe mode, disable depth test, use stencil buffer, disable culling,
+custom blending, etc... All these things help you achieve even more advanced effects.
 
 ### 3D models, textures (2D, 3D, cubemaps) & audio files
 You can add music and create amazing visualizers!
@@ -57,21 +68,27 @@ Load textures from files and bind them to your shader. SHADERed also supports cu
 </p>
 
 ### Render textures
-You can render your scene to render textures. You can bind multiple render textures to one shader pass. This can help with creating G-Buffer and similar things more easily. You can modify these render texture properties: size, format & clear color
+You can render your scene to render textures. You can bind multiple render textures as output
+to one shader pass. This helps with creating G-Buffer and similar things.
+You can modify these render texture properties: size, format & clear color
 <p align="center">
     <img width="220" src="./Misc/Screenshots/multiplert.jpg">
 </p>
 
 ### Shader input variables
-You can create your own variables and edit their values in real time. SHADERed also comes with lots of built-in 'system' shader variables (elapsed time, window size, various
-view matrices, etc...).
-You can also change shader variable value only for a specific 3D object - no programming required.
+You can create your own variables and edit their values in real time. SHADERed also
+comes with lots of built-in 'system' shader variables (elapsed time, window size,
+various view matrices, etc...).
+You can change shader variable value only for a specific 3D object - no
+programming required.
 <p align="center">
     <img width="400" src="./Misc/Screenshots/itemvarvalue.gif">
 </p>
 
 ### Zooming in & pausing
-Do you need to zoom in on an area of your shader output? You can do that by holding ALT and selecting the area you want to zoom in. This can be useful when developing antialiasing shaders. It is also possible to pause the time
+Do you need to zoom in on an area of your shader output? You can do that by
+holding ALT and then selecting the area you want to zoom in. This can be useful
+when developing antialiasing shaders. It is also possible to pause the time
 <p align="center">
     <img width="400" src="./Misc/Screenshots/zoomin.gif"><br/>
     <em>Shader made by <a href="https://www.youtube.com/channel/UCcAlTqd9zID6aNX3TzwxJXg">The Art Of Code</a></em>
@@ -83,9 +100,11 @@ Instancing, buffers, audio shaders, ability to have more than one camera, shader
 You can also check this list too: [link](https://shadered.org/features.php).
 
 ## Supporters
-**Silver supporter(s):**
-[Hugo Locurcio](https://hugo.pro)
-
+**Supporter(s):**
+  * [Hugo Locurcio](https://hugo.pro)
+  * Senthil Kumaran Rajasekaran
+  * [Vladimir Alyamkin](https://alyamkin.com/)
+  * [Wogos Media](http://theWogos.com/)
 
 ## Support
 Support the development of this project on Patreon: [<img width="120" src="https://c5.patreon.com/external/logo/become_a_patron_button@2x.png">](https://www.patreon.com/dfranx)
@@ -127,21 +146,27 @@ First clone the project & submodules:
 ```
 git clone https://github.com/dfranx/SHADERed.git
 cd SHADERed
-git submodule update --init --recursive
+git submodule update --init
 ```
 
 ### Linux
 Install all the libraries that are needed:
 ```
 # Ubuntu
-sudo apt install libsdl2-dev libsfml-dev libglew-dev libglm-dev libassimp-dev libgtk-3-dev
+sudo apt install libsdl2-dev libsfml-dev libglew-dev libglm-dev libgtk-3-dev
 # Fedora
-sudo dnf install assimp-devel SFML-devel glm-devel glew-devel SDL2-devel gtk3-devel
+sudo dnf install SFML-devel glm-devel glew-devel SDL2-devel gtk3-devel
 ```
 
 Build:
 ```
 cmake .
+make
+```
+
+**NOTE:** If you want immediate mode and related features, turn on BUILD_IMMEDIATE_MODE flag.
+```
+cmake -DBUILD_IMMEDIATE_MODE=ON .
 make
 ```
 
@@ -165,11 +190,12 @@ Run:
 ```
 
 ### macOS
+**NOTE: macOS is not officially supported by me + some features are not supported on macOS**
 
 Install all the libraries that are needed:
 
 ```sh
-brew install sdl2 sfml glew glm assimp
+brew install sdl2 sfml glew glm
 ```
 
 Build:
@@ -193,17 +219,16 @@ Run:
 ```
 
 ### Windows
-1. Install SDL2, SFML, GLEW, GLM, ASSIMP through your favourite package manager (I recommend vcpkg)
-2. Run cmake-gui and set CMAKE_TOOLCHAIN_FILE variable
+1. Install SDL2, SFML, GLEW & GLM through your favourite package manager (I recommend vcpkg)
+2. Run cmake-gui and set CMAKE_TOOLCHAIN_FILE variable (and turn on BUILD_IMMEDIATE_MODE flag if you want to have immediate mode and related features)
 3. Press Configure and then Generate if no errors occured
 4. Open the .sln and build the project!
 
 ## Tutorial
-Don't know how or where to start? The debugger is confusing? Want to create your own shader or custom SHADERed theme? Visit [TUTORIAL.md](TUTORIAL.md) to see
-detailed steps on how to do these things.
-
-## Used by
-[<img width="250" src="./Misc/Logo/arkaos.png">](https://www.arkaos.com/)
+Don't know how or where to start? The debugger is confusing? Want to create your own
+shader or custom SHADERed theme? Visit [the official documentation](https://shadered.org/docs/index.html)
+to see detailed steps on how to do these things.
+Or you can watch the video tutorials on [YouTube](https://www.youtube.com/watch?v=vuJLpnL73As&list=PLK0EO-cKorzRAEfwHoJFiIldiyiyDR3-2).
 
 ## Screenshots
 ![](./Misc/Screenshots/screen1.jpg)
@@ -211,21 +236,25 @@ detailed steps on how to do these things.
 
 ![](https://user-images.githubusercontent.com/3957610/64245795-e54b0680-cf0b-11e9-8799-ea7ace785190.png)
 
-![](https://shadered.org/img/themes.png)
-
 Send your own screenshots [here](https://github.com/dfranx/SHADERed/issues/8)!
 
 ## Dependencies
 This project uses:
- - [ocornut/imgui](https://github.com/ocornut/imgui/tree/docking) (docking branch)
+ - [assimp/assimp](https://github.com/assimp/assimp)
+ - [KhronosGroup/glslang](https://github.com/KhronosGroup/glslang)
+ - [ocornut/imgui](https://github.com/ocornut/imgui/tree/docking) (docking + tables branch)
+ - [juliettef/imgui_markdown](https://github.com/juliettef/imgui_markdown)
  - [BalazsJako/ImGuiColorTextEdit](https://github.com/BalazsJako/ImGuiColorTextEdit)
- - [zeux/pugixml](https://github.com/zeux/pugixml)
  - [benhoyt/inih](https://github.com/benhoyt/inih)
- - [KhronosGroup/glslangValidator](https://github.com/KhronosGroup/glslang)
+ - [zeux/pugixml](https://github.com/zeux/pugixml)
+ - [dfranx/ShaderExpressionParser](https://github.com/dfranx/ShaderExpressionParser)
  - [KhronosGroup/SPIRV-Cross](https://github.com/KhronosGroup/SPIRV-Cross)
- - [gulrak/filesystem](https://github.com/gulrak/filesystem)
+ - [KhronosGroup/SPIRV-Headers](https://github.com/KhronosGroup/SPIRV-Headers)
+ - [KhronosGroup/SPIRV-Tools](https://github.com/KhronosGroup/SPIRV-Tools)
+ - [dfranx/SPIRV-VM](https://github.com/dfranx/SPIRV-VM)
+ - [rAzoR8/SpvGenTwo](https://github.com/rAzoR8/SpvGenTwo)
  - [nothings/stb](https://github.com/nothings/stb)
- - [mlabbe/nativefiledialog](https://github.com/mlabbe/nativefiledialog)
+ - [aiekick/ImGuiFileDialog](https://github.com/aiekick/ImGuiFileDialog)
 
 Some of the examples in the `examples` directory were taken from AMD's Render Monkey, so credits to AMD.
 
