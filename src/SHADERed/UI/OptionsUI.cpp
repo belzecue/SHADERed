@@ -132,7 +132,7 @@ namespace ed {
 	}
 	void OptionsUI::ApplyTheme()
 	{
-		Logger::Get().Log("Applying UI theme to SHADERed...");
+		Logger::Get().Log("Applying UI theme to SHADERed");
 
 		std::string theme = Settings::Instance().Theme;
 		CodeEditorUI* editor = ((CodeEditorUI*)m_ui->Get(ViewID::Code));
@@ -212,7 +212,7 @@ namespace ed {
 	}
 	void OptionsUI::m_loadThemeList()
 	{
-		Logger::Get().Log("Loading a theme list...");
+		Logger::Get().Log("Loading theme list");
 
 		m_themes.clear();
 		m_themes.push_back("Dark");
@@ -544,6 +544,8 @@ namespace ed {
 				SDL_GetDisplayDPI(wndDisplayIndex, NULL, &dpi, NULL);
 				dpi /= 96.0f;
 
+				if (dpi <= 0.0f) dpi = 1.0f;
+
 				settings->TempScale = dpi;
 			} else
 				settings->TempScale = 1;
@@ -643,10 +645,15 @@ namespace ed {
 			settings->Editor.FontSize = std::max<int>(std::min<int>(settings->Editor.FontSize, 72), 9);
 		ImGui::PopItemWidth();
 
-		/* SHOW WHITESPACE: */
+		/* FUNCTION TOOLTIPS: */
 		ImGui::Text("Show function description tooltips: ");
 		ImGui::SameLine();
 		ImGui::Checkbox("##opte_show_functooltips", &settings->Editor.FunctionTooltips);
+
+		/* FUNCTION DECLARATION TOOLTIPS: */
+		ImGui::Text("Show function declaration tooltips: ");
+		ImGui::SameLine();
+		ImGui::Checkbox("##opte_show_funcdeclrtooltips", &settings->Editor.FunctionDeclarationTooltips);
 
 		/* SYNTAX HIGHLIGHTING: */
 		ImGui::Text("Syntax highlighting: ");

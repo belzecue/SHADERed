@@ -5,6 +5,7 @@
 #include <SDL2/SDL.h>
 #include <SHADERed/EditorEngine.h>
 #include <SHADERed/Objects/CommandLineOptionParser.h>
+#include <SHADERed/Objects/ShaderCompiler.h>
 #include <SHADERed/Objects/Logger.h>
 #include <SHADERed/Objects/Settings.h>
 #include <glslang/Public/ShaderLang.h>
@@ -42,20 +43,56 @@ void SetDpiAware();
 
 int main(int argc, char* argv[])
 {
-	srand(time(NULL));
+	bool run = true; // should we enter the infinite loop?
 
+	srand(time(NULL));
+	
+	std::error_code fsError;
 	std::filesystem::path cmdDir = std::filesystem::current_path();
 
 	if (argc > 0) {
 		if (std::filesystem::exists(std::filesystem::path(argv[0]).parent_path())) {
-			std::filesystem::current_path(std::filesystem::path(argv[0]).parent_path());
+			std::filesystem::current_path(std::filesystem::path(argv[0]).parent_path(), fsError);
 
 			ed::Logger::Get().Log("Setting current_path to " + std::filesystem::current_path().generic_string());
 		}
 	}
 
+	// start glslang process
+	bool glslangInit = glslang::InitializeProcess();
+	ed::Logger::Get().Log("Initializing glslang...");
+
+	if (glslangInit)
+		ed::Logger::Get().Log("Finished glslang initialization");
+	else
+		ed::Logger::Get().Log("Failed to initialize glslang", true);
+
 	ed::CommandLineOptionParser coptsParser;
 	coptsParser.Parse(cmdDir, argc - 1, argv + 1);
+
+	// --compile
+	if (!coptsParser.CompilePath.empty()) {
+		std::vector<unsigned int> spv;
+		std::vector<ed::ShaderMacro> macros;
+		bool status = ed::ShaderCompiler::CompileToSPIRV(spv, coptsParser.CompileLanguage, coptsParser.CompilePath, coptsParser.CompileStage, coptsParser.CompileEntry, macros, nullptr, nullptr);
+		if (!status) {
+			printf("Failed to compile the shader.\n");
+		} else {
+			if (coptsParser.CompileSPIRV) {
+				std::ofstream spvOut(coptsParser.CompileOutput, std::ios::out | std::ios::binary);
+				spvOut.write((char*)spv.data(), spv.size() * sizeof(unsigned int));
+				spvOut.close();
+			} else {
+				std::string glslSource = ed::ShaderCompiler::ConvertToGLSL(spv, coptsParser.CompileLanguage, coptsParser.CompileStage, false, nullptr);
+
+				std::ofstream glslOut(coptsParser.CompileOutput, std::ios::out | std::ios::binary);
+				glslOut.write(glslSource.c_str(), glslSource.size());
+				glslOut.close();
+			}
+			printf("Done compiling.");
+		}
+	}
+
 	if (!coptsParser.LaunchUI)
 		return 0;
 
@@ -70,7 +107,7 @@ int main(int argc, char* argv[])
 		std::string exePath = "";
 		if (readlinkRes != -1)
 			exePath = std::string(dirname(result));
-
+		
 		std::vector<std::string> toCheck = {
 			"/../share/SHADERed",
 			"/../share/shadered"
@@ -78,13 +115,16 @@ int main(int argc, char* argv[])
 		};
 
 		for (const auto& wrkpath : toCheck) {
-			if (std::filesystem::exists(exePath + wrkpath)) {
+			if (std::filesystem::exists(exePath + wrkpath, fsError)) {
 				linuxUseHomeDir = true;
-				std::filesystem::current_path(exePath + wrkpath);
+				std::filesystem::current_path(exePath + wrkpath, fsError);
 				ed::Logger::Get().Log("Setting current_path to " + std::filesystem::current_path().generic_string());
 				break;
 			}
 		}
+
+		if (access(exePath.c_str(), W_OK) != 0) 
+			linuxUseHomeDir = true;		
 	}
 
 	if (linuxUseHomeDir) {
@@ -98,49 +138,33 @@ int main(int argc, char* argv[])
 		if (homedir != NULL) {
 			ed::Settings::Instance().LinuxHomeDirectory = std::string(homedir) + homedirSuffix + "/shadered/";
 
-			if (!std::filesystem::exists(ed::Settings::Instance().LinuxHomeDirectory))
-				std::filesystem::create_directory(ed::Settings::Instance().LinuxHomeDirectory);
-			if (!std::filesystem::exists(ed::Settings::Instance().LinuxHomeDirectory + "data"))
-				std::filesystem::create_directory(ed::Settings::Instance().LinuxHomeDirectory + "data");
-			if (!std::filesystem::exists(ed::Settings::Instance().LinuxHomeDirectory + "themes"))
-				std::filesystem::create_directory(ed::Settings::Instance().LinuxHomeDirectory + "themes");
-			if (!std::filesystem::exists(ed::Settings::Instance().LinuxHomeDirectory + "plugins"))
-				std::filesystem::create_directory(ed::Settings::Instance().LinuxHomeDirectory + "plugins");
+			if (!std::filesystem::exists(ed::Settings::Instance().LinuxHomeDirectory, fsError))
+				std::filesystem::create_directory(ed::Settings::Instance().LinuxHomeDirectory, fsError);
+			if (!std::filesystem::exists(ed::Settings::Instance().ConvertPath("data"), fsError))
+				std::filesystem::create_directory(ed::Settings::Instance().ConvertPath("data"), fsError);
+			if (!std::filesystem::exists(ed::Settings::Instance().ConvertPath("themes"), fsError))
+				std::filesystem::create_directory(ed::Settings::Instance().ConvertPath("themes"), fsError);
+			if (!std::filesystem::exists(ed::Settings::Instance().ConvertPath("plugins"), fsError))
+				std::filesystem::create_directory(ed::Settings::Instance().ConvertPath("plugins"), fsError);
 		}
 	}
 #endif
 
 	// create data directory on startup
-	if (!std::filesystem::exists("./data/"))
-		std::filesystem::create_directory("./data/");
-	if (!ed::Settings::Instance().LinuxHomeDirectory.empty() && !std::filesystem::exists(ed::Settings::Instance().LinuxHomeDirectory + "data/"))
-		std::filesystem::create_directory(ed::Settings::Instance().LinuxHomeDirectory + "data/");
+	if (!std::filesystem::exists(ed::Settings::Instance().ConvertPath("data/"), fsError))
+		std::filesystem::create_directory(ed::Settings::Instance().ConvertPath("data/"), fsError);
 
 	// create temp directory
-	std::error_code ec;
-	if (!ed::Settings::Instance().LinuxHomeDirectory.empty() && !std::filesystem::exists(ed::Settings::Instance().LinuxHomeDirectory + "temp/"))
-		std::filesystem::create_directory(ed::Settings::Instance().LinuxHomeDirectory + "temp/");
-	else if (!std::filesystem::exists("./temp/", ec))
-		std::filesystem::create_directory("./temp/");
+	if (!std::filesystem::exists(ed::Settings::Instance().ConvertPath("temp/"), fsError))
+		std::filesystem::create_directory(ed::Settings::Instance().ConvertPath("temp/"), fsError);
 
 	// delete log.txt on startup
-	if (std::filesystem::exists("./log.txt")) {
-		std::error_code errCode;
-		std::filesystem::remove("./log.txt", errCode);
-	}
+	if (std::filesystem::exists(ed::Settings::Instance().ConvertPath("log.txt"), fsError))
+		std::filesystem::remove(ed::Settings::Instance().ConvertPath("log.txt"), fsError);
 
 	// set stb_image flags
 	stbi_flip_vertically_on_write(1);
 	stbi_set_flip_vertically_on_load(1);
-
-	// start glslang process
-	bool glslangInit = glslang::InitializeProcess();
-	ed::Logger::Get().Log("Initializing glslang...");
-
-	if (glslangInit)
-		ed::Logger::Get().Log("Finished glslang initialization");
-	else
-		ed::Logger::Get().Log("Failed to initialize glslang", true);
 
 	// init sdl2
 	if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER | SDL_INIT_AUDIO) < 0) {
@@ -152,8 +176,8 @@ int main(int argc, char* argv[])
 
 	// load window size
 	std::string preloadDatPath = "data/preload.dat";
-	if (!ed::Settings::Instance().LinuxHomeDirectory.empty() && std::filesystem::exists(ed::Settings::Instance().LinuxHomeDirectory + preloadDatPath))
-		preloadDatPath = ed::Settings::Instance().LinuxHomeDirectory + preloadDatPath;
+	if (!ed::Settings::Instance().LinuxHomeDirectory.empty() && std::filesystem::exists(ed::Settings::Instance().LinuxHomeDirectory + preloadDatPath, fsError))
+		preloadDatPath = ed::Settings::Instance().ConvertPath(preloadDatPath);
 	short wndWidth = 800, wndHeight = 600, wndPosX = -1, wndPosY = -1;
 	bool fullscreen = false, maximized = false, perfMode = false;
 	std::ifstream preload(preloadDatPath);
@@ -181,8 +205,7 @@ int main(int argc, char* argv[])
 		ed::Logger::Get().Log("File data/preload.dat doesnt exist", true);
 		ed::Logger::Get().Log("Deleting data/workspace.dat", true);
 
-		std::error_code errCode;
-		std::filesystem::remove("./data/workspace.dat", errCode);
+		std::filesystem::remove("./data/workspace.dat", fsError);
 	}
 
 	// apply parsed CL options
@@ -201,8 +224,18 @@ int main(int argc, char* argv[])
 	SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
 	SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1); // double buffering
 
+	Uint32 windowFlags = SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI;
+	
+	// make the window invisible if only rendering to a file
+	if (coptsParser.Render) {
+		windowFlags = SDL_WINDOW_OPENGL | SDL_WINDOW_HIDDEN;
+		maximized = false;
+		fullscreen = false;
+		run = false;
+	}
+
 	// open window
-	SDL_Window* wnd = SDL_CreateWindow("SHADERed", (wndPosX == -1) ? SDL_WINDOWPOS_CENTERED : wndPosX, (wndPosY == -1) ? SDL_WINDOWPOS_CENTERED : wndPosY, wndWidth, wndHeight, SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
+	SDL_Window* wnd = SDL_CreateWindow("SHADERed", (wndPosX == -1) ? SDL_WINDOWPOS_CENTERED : wndPosX, (wndPosY == -1) ? SDL_WINDOWPOS_CENTERED : wndPosY, wndWidth, wndHeight, windowFlags);
 	SetDpiAware();
 	SDL_SetWindowMinimumSize(wnd, 200, 200);
 
@@ -235,20 +268,29 @@ int main(int argc, char* argv[])
 	// set window icon:
 	SetIcon(wnd);
 
-	// open an item if given in arguments
-	if (!coptsParser.ProjectFile.empty()) {
-		ed::Logger::Get().Log("Opening a file provided through argument " + coptsParser.ProjectFile);
-		engine.UI().Open(coptsParser.ProjectFile);
-	}
-
+	engine.UI().SetCommandLineOptions(coptsParser);
 	engine.UI().SetPerformanceMode(perfMode);
-	engine.UI().SetMinimalMode(coptsParser.MinimalMode);
 	engine.Interface().Renderer.AllowComputeShaders(GLEW_ARB_compute_shader);
+
+	// check for filesystem errors
+	if (fsError)
+		ed::Logger::Get().Log("A filesystem error has occured: " + fsError.message(), true);
+
+	// loop through all OpenGL errors
+	GLenum oglError;
+	while ((oglError = glGetError()) != GL_NO_ERROR)
+		ed::Logger::Get().Log("GL error: " + std::to_string(oglError), true);
+
+	// render to file
+	if (coptsParser.Render) {
+		engine.UI().Open(coptsParser.ProjectFile);
+		printf("Rendering to file...\n");
+		engine.UI().SavePreviewToFile();
+	}
 
 	// timer for time delta
 	ed::eng::Timer timer;
 	SDL_Event event;
-	bool run = true;
 	bool minimized = false;
 	bool hasFocus = true;
 	while (run) {
@@ -299,6 +341,8 @@ int main(int argc, char* argv[])
 					int wndDisplayIndex = SDL_GetWindowDisplayIndex(wnd);
 					SDL_GetDisplayDPI(wndDisplayIndex, &dpi, NULL, NULL);
 
+					if (dpi <= 0.0f) dpi = 1.0f;
+
 					ed::Settings::Instance().TempScale = dpi / 96.0f;
 					ed::Logger::Get().Log("Updating DPI to " + std::to_string(dpi / 96.0f));
 				}
@@ -334,26 +378,25 @@ int main(int argc, char* argv[])
 	} converter;
 
 	// save window size
-	if (!ed::Settings::Instance().LinuxHomeDirectory.empty())
-		preloadDatPath = ed::Settings::Instance().LinuxHomeDirectory + "data/preload.dat";
-	std::ofstream save(preloadDatPath);
+	preloadDatPath = ed::Settings::Instance().ConvertPath("data/preload.dat");
+	if (!coptsParser.Render) {
+		ed::Logger::Get().Log("Saving window information");
 
-	ed::Logger::Get().Log("Saving window information");
-
-	converter.size = wndWidth; // write window width
-	save.write(converter.data, 2);
-	converter.size = wndHeight; // write window height
-	save.write(converter.data, 2);
-	converter.size = wndPosX; // write window position x
-	save.write(converter.data, 2);
-	converter.size = wndPosY; // write window position y
-	save.write(converter.data, 2);
-	save.put(fullscreen);
-	save.put(maximized);
-	save.put(engine.UI().IsPerformanceMode());
-	save.write(converter.data, 2);
-
-	save.close();
+		std::ofstream save(preloadDatPath);
+		converter.size = wndWidth; // write window width
+		save.write(converter.data, 2);
+		converter.size = wndHeight; // write window height
+		save.write(converter.data, 2);
+		converter.size = wndPosX; // write window position x
+		save.write(converter.data, 2);
+		converter.size = wndPosY; // write window position y
+		save.write(converter.data, 2);
+		save.put(fullscreen);
+		save.put(maximized);
+		save.put(engine.UI().IsPerformanceMode());
+		save.write(converter.data, 2);
+		save.close();
+	}
 
 	// close and free the memory
 	engine.Destroy();
@@ -376,6 +419,8 @@ void SetIcon(SDL_Window* wnd)
 	int wndDisplayIndex = SDL_GetWindowDisplayIndex(wnd);
 	SDL_GetDisplayDPI(wndDisplayIndex, &dpi, NULL, NULL);
 	dpi /= 96.0f;
+
+	if (dpi <= 0.0f) dpi = 1.0f;
 
 	stbi_set_flip_vertically_on_load(0);
 

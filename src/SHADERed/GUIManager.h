@@ -1,6 +1,7 @@
 #pragma once
 #include <SHADERed/Objects/KeyboardShortcuts.h>
 #include <SHADERed/Objects/ShaderVariableContainer.h>
+#include <SHADERed/Objects/CommandLineOptionParser.h>
 #include <SHADERed/Objects/SPIRVParser.h>
 #include <SHADERed/Objects/WebAPI.h>
 #include <SHADERed/UI/Tools/NotificationSystem.h>
@@ -35,7 +36,10 @@ namespace ed {
 		DebugValues,
 		DebugFunctionStack,
 		DebugBreakpointList,
+		DebugVectorWatch,
+		DebugAuto,
 		DebugImmediate,
+		DebugGeometryOutput,
 		Options,
 		ObjectPreview
 	};
@@ -86,7 +90,13 @@ namespace ed {
 		void SaveAsProject(bool restoreCached = false, std::function<void(bool)> handle = nullptr, std::function<void()> preHandle = nullptr);
 		void Open(const std::string& file);
 
+		void SetCommandLineOptions(CommandLineOptionParser& options);
+
+		void SavePreviewToFile();
+
 	private:
+		void m_renderPopups(float delta);
+
 		void m_setupShortcuts();
 
 		void m_imguiHandleEvent(const SDL_Event& e);
@@ -94,27 +104,17 @@ namespace ed {
 		void m_autoUniforms(ShaderVariableContainer& vars, SPIRVParser& spv, std::vector<std::string>& uniformList);
 		void m_deleteUnusedUniforms(ShaderVariableContainer& vars, const std::vector<std::string>& spv);
 
+		void m_addProjectToRecents(const std::string& file);
+
+		void m_createNewProject();
+
 		void m_tooltip(const std::string& str);
 		void m_renderToolbar();
 		ImFont* m_iconFontLarge;
 
-		std::vector<std::string> m_recentProjects;
+		CommandLineOptionParser* m_cmdArguments;
 
-		std::vector<ed::WebAPI::ShaderResult> m_onlineShaders;
-		std::vector<GLuint> m_onlineShaderThumbnail;
-		std::vector<ed::WebAPI::PluginResult> m_onlinePlugins;
-		std::vector<GLuint> m_onlinePluginThumbnail;
-		std::vector<ed::WebAPI::ThemeResult> m_onlineThemes;
-		std::vector<GLuint> m_onlineThemeThumbnail;
-		std::vector<std::string> m_onlineInstalledPlugins;
-		int m_onlinePage, m_onlineShaderPage, m_onlinePluginPage, m_onlineThemePage;
-		bool m_onlineIsShader, m_onlineIsPlugin;
-		char m_onlineQuery[256];
-		char m_onlineUsername[64];
-		bool m_onlineExcludeGodot;
-		void m_onlineSearchShaders();
-		void m_onlineSearchPlugins();
-		void m_onlineSearchThemes();
+		std::vector<std::string> m_recentProjects;
 
 		int m_width, m_height;
 
@@ -122,8 +122,9 @@ namespace ed {
 		bool m_optionsOpened;
 		int m_optGroup;
 		UIView* m_options;
-
+		UIView* m_browseOnline;
 		UIView* m_objectPrev;
+		UIView* m_geometryOutput;
 
 		std::string m_cachedFont;
 		int m_cachedFontSize;
@@ -135,7 +136,7 @@ namespace ed {
 		bool m_recompiledAll;
 
 		bool m_isCreateItemPopupOpened, m_isCreateRTOpened,
-			m_isCreateCubemapOpened, m_isNewProjectPopupOpened,
+			m_isCreateCubemapOpened,
 			m_isAboutOpen, m_isCreateBufferOpened, m_isCreateImgOpened,
 			m_isInfoOpened, m_isCreateImg3DOpened, m_isRecordCameraSnapshotOpened,
 			m_isIncompatPluginsOpened, m_isCreateKBTxtOpened, m_isBrowseOnlineOpened;
@@ -155,7 +156,7 @@ namespace ed {
 		glm::ivec2 m_previewSaveSize;
 
 		bool m_isChangelogOpened;
-		std::string m_changelogText;
+		std::string m_changelogText, m_changelogBlogLink;
 		void m_checkChangelog();
 
 		std::string m_saveAsOldFile;
@@ -163,6 +164,7 @@ namespace ed {
 		bool m_saveAsRestoreCache;
 		std::function<void(bool)> m_saveAsHandle;
 		std::function<void()> m_saveAsPreHandle;
+
 
 		bool m_expcppError;
 		int m_expcppBackend;
@@ -182,6 +184,7 @@ namespace ed {
 		void m_splashScreenLoad();
 		bool m_splashScreen;
 		unsigned int m_splashScreenIcon, m_splashScreenText;
+		unsigned int m_sponsorDigitalOcean, m_sponsorEmbark;
 		unsigned int m_splashScreenFrame;
 		eng::Timer m_splashScreenTimer;
 		bool m_splashScreenLoaded;

@@ -5,7 +5,7 @@
 #include <vector>
 
 #include <SHADERed/Engine/GLUtils.h>
-#include <SHADERed/Objects/HLSLFileIncluder.h>
+#include <SHADERed/Objects/ShaderFileIncluder.h>
 #include <SHADERed/Objects/Logger.h>
 #include <SHADERed/Objects/Settings.h>
 #include <SHADERed/Objects/ShaderCompiler.h>
@@ -135,14 +135,32 @@ namespace ed {
 
 		// Set options
 		spirv_cross::CompilerGLSL::Options options;
-
 		int ver = 330;
 		if (GLEW_ARB_shader_storage_buffer_object)
 			ver = 430;
-
 		options.version = (sType == ShaderStage::Compute) ? 430 : ver;
-
 		glsl.set_common_options(options);
+
+		// Set entry
+		auto entry_points = glsl.get_entry_points_and_stages();
+		spv::ExecutionModel model = spv::ExecutionModelMax;
+		std::string entry_point = "";
+		if (sType == ShaderStage::Vertex)
+			model = spv::ExecutionModelVertex;
+		else if (sType == ShaderStage::Pixel)
+			model = spv::ExecutionModelFragment;
+		else if (sType == ShaderStage::Geometry)
+			model = spv::ExecutionModelGeometry;
+		else if (sType == ShaderStage::Compute)
+			model = spv::ExecutionModelGLCompute;
+		for (auto& e : entry_points) {
+			if (e.execution_model == model) {
+				entry_point = e.name;
+				break;
+			}
+		}
+		if (!entry_point.empty() && model != spv::ExecutionModeMax)
+			glsl.set_entry_point(entry_point, model);
 
 		auto active = glsl.get_active_interface_variables();
 
@@ -307,8 +325,6 @@ namespace ed {
 			}
 		}
 
-		ed::Logger::Get().Log("Finished transcompiling the shader");
-
 		return source;
 	}
 	bool ShaderCompiler::CompileToSPIRV(std::vector<unsigned int>& spvOut, ShaderLanguage inLang, const std::string& filename, ShaderStage sType, const std::string& entry, std::vector<ShaderMacro>& macros, MessageStack* msgs, ProjectParser* project)
@@ -377,14 +393,17 @@ namespace ed {
 		if (preambleStr.size() > 0)
 			shader.setPreamble(preambleStr.c_str());
 		
+		glslang::EShClient gClient = glslang::EShClientOpenGL;
+		// if (inLang == ShaderLanguage::VulkanGLSL)
+		//	gClient = glslang::EShClientVulkan;
 
 		// set up
 		int sVersion = (sType == ShaderStage::Compute) ? 430 : 330;
 		glslang::EShTargetClientVersion targetClientVersion = glslang::EShTargetOpenGL_450;
 		glslang::EShTargetLanguageVersion targetLanguageVersion = glslang::EShTargetSpv_1_5;
 
-		shader.setEnvInput(inLang == ShaderLanguage::HLSL ? glslang::EShSourceHlsl : glslang::EShSourceGlsl, shaderType, glslang::EShClientOpenGL, sVersion);
-		shader.setEnvClient(glslang::EShClientOpenGL, targetClientVersion);
+		shader.setEnvInput(inLang == ShaderLanguage::HLSL ? glslang::EShSourceHlsl : glslang::EShSourceGlsl, shaderType, gClient, sVersion);
+		shader.setEnvClient(gClient, targetClientVersion);
 		shader.setEnvTarget(glslang::EShTargetSpv, targetLanguageVersion);
 
 		TBuiltInResource res = DefaultTBuiltInResource;
@@ -393,7 +412,8 @@ namespace ed {
 		const int defVersion = sVersion;
 
 		// includer
-		ed::HLSLFileIncluder includer;
+		ShaderFileIncluder includer;
+		includer.ProjectHandle = project;
 		includer.pushExternalLocalDirectory(filename.substr(0, filename.find_last_of("/\\")));
 		if (project != nullptr)
 			for (auto& str : Settings::Instance().Project.IncludePaths)

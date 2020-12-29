@@ -1,5 +1,6 @@
 #include <SHADERed/Objects/DebugInformation.h>
 #include <SHADERed/Objects/SystemVariableManager.h>
+#include <SHADERed/Objects/Logger.h>
 
 #include <iomanip>
 
@@ -10,7 +11,319 @@
 #define GET_VALUE_WITH_CHECK_INT(val, c) (val == nullptr ? 0 : val->members[c].value.s)
 #define GET_VALUE2_WITH_CHECK_INT(val, c, r) (val == nullptr ? 0 : val->members[c].members[r].value.s)
 
+/* compute shader callbacks */
+void allocateWorkgroupMemory(struct spvm_state* state, spvm_word result_id, spvm_word type_id)
+{
+	ed::DebugInformation* dbgr = (ed::DebugInformation*)state->owner->user_data;
+	ed::DebugInformation::SharedMemoryEntry memEntry;
 
+	memEntry.Destination = &state->results[result_id];
+	memcpy(&memEntry.Data, memEntry.Destination, sizeof(spvm_result));
+	spvm_result_allocate_typed_value(&memEntry.Data, state->results, type_id);
+	memEntry.Slot = result_id;
+
+	dbgr->SharedMemory.push_back(memEntry);
+}
+void writeWorkgroupMemory(struct spvm_state* state, spvm_word result_id, spvm_word val_id)
+{
+	spvm_result_t ptr = &state->results[result_id];
+	if (ptr->source_location != nullptr) {
+		spvm_word word_count = ptr->source_word_count;
+		spvm_source code = ptr->source_location;
+
+		spvm_word var_type = SPVM_READ_WORD(code);
+		spvm_word id = SPVM_READ_WORD(code);
+		spvm_word memory_id = SPVM_READ_WORD(code);
+
+		spvm_result_t sharedData = nullptr;
+
+		ed::DebugInformation* dbgr = (ed::DebugInformation*)state->owner->user_data;
+
+		for (int i = 0; i < dbgr->SharedMemory.size(); i++) {
+			if (dbgr->SharedMemory[i].Slot == memory_id) {
+				sharedData = &dbgr->SharedMemory[i].Data;
+				break;
+			}
+		}
+
+		if (sharedData == nullptr)
+			return;
+
+		spvm_word index_count = word_count - 4;
+
+		spvm_word index_id = SPVM_READ_WORD(code);
+		spvm_word index = state->results[index_id].members[0].value.s;
+
+		spvm_member_t result = sharedData->members + MIN(index, sharedData->member_count - 1);
+
+		while (index_count) {
+			index_id = SPVM_READ_WORD(code);
+			index = state->results[index_id].members[0].value.s;
+
+			result = result->members + MIN(index, result->member_count - 1);
+
+			index_count--;
+		}
+
+		spvm_member* members = nullptr;
+		spvm_word member_count = 0;
+		if (result->member_count != 0) {
+			member_count = result->member_count;
+			members = result->members;
+		} else {
+			member_count = 1;
+			members = result;
+		}
+		spvm_member_memcpy(members, state->results[val_id].members, member_count);
+	}
+}
+void controlBarrier(struct spvm_state* state, spvm_word exec, spvm_word mem, spvm_word sem)
+{
+	ed::DebugInformation* dbgr = (ed::DebugInformation*)state->owner->user_data;
+
+	// copy memory
+	for (int i = 0; i < dbgr->SharedMemory.size(); i++) {
+		const ed::DebugInformation::SharedMemoryEntry& entry = dbgr->SharedMemory[i];
+		spvm_member_memcpy(entry.Data.members, entry.Destination->members, entry.Data.member_count);
+	}
+
+	// synchronize threads
+	dbgr->SyncWorkgroup();
+
+	// copy memory
+	for (int i = 0; i < dbgr->SharedMemory.size(); i++) {
+		const ed::DebugInformation::SharedMemoryEntry& entry = dbgr->SharedMemory[i];
+		spvm_member_memcpy(entry.Destination->members, entry.Data.members, entry.Destination->member_count);
+	}
+}
+void atomicOperation(spvm_word inst, spvm_word word_count, struct spvm_state* state)
+{
+	ed::DebugInformation* dbgr = (ed::DebugInformation*)state->owner->user_data;
+
+
+	switch (inst) {
+	case SpvOpAtomicLoad:
+	case SpvOpAtomicExchange:
+	case SpvOpAtomicIIncrement:
+	case SpvOpAtomicIDecrement:
+	case SpvOpAtomicIAdd:
+	case SpvOpAtomicISub:
+	case SpvOpAtomicSMin:
+	case SpvOpAtomicUMin:
+	case SpvOpAtomicSMax:
+	case SpvOpAtomicUMax:
+	case SpvOpAtomicAnd:
+	case SpvOpAtomicOr:
+	case SpvOpAtomicXor: {
+		spvm_word result_type_id = SPVM_READ_WORD(state->code_current);
+		spvm_word result_id = SPVM_READ_WORD(state->code_current);
+		spvm_word pointer_id = SPVM_READ_WORD(state->code_current);
+		spvm_word memory_id = SPVM_READ_WORD(state->code_current);
+		spvm_word semantics_id = SPVM_READ_WORD(state->code_current);
+
+		spvm_result_t result = &state->results[result_id];
+		spvm_result_t pointer = &state->results[pointer_id];
+
+		// copy old value
+		spvm_member_memcpy(result->members, pointer->members, result->member_count);
+
+		// find shared memory pointer
+		spvm_result_t shared = nullptr;
+		for (ed::DebugInformation::SharedMemoryEntry& entry : dbgr->SharedMemory) {
+			if (pointer_id == entry.Slot) {
+				shared = &entry.Data;
+				break;
+			}
+		}
+		spvm_result_t data = (shared == nullptr) ? pointer : shared;
+
+		if (inst == SpvOpAtomicExchange) {
+			spvm_word value_id = SPVM_READ_WORD(state->code_current);
+			spvm_result_t value = &state->results[value_id];
+
+			spvm_member_memcpy(data->members, value->members, data->member_count);
+		} else if (inst == SpvOpAtomicIIncrement) {
+			for (int i = 0; i < data->member_count; i++)
+				data->members[i].value.u++;
+		} else if (inst == SpvOpAtomicIDecrement) {
+			for (int i = 0; i < data->member_count; i++)
+				data->members[i].value.u--;
+		} else if (inst == SpvOpAtomicIAdd) {
+			spvm_word value_id = SPVM_READ_WORD(state->code_current);
+			spvm_result_t value = &state->results[value_id];
+
+			for (int i = 0; i < data->member_count; i++)
+				data->members[i].value.u += value->members[i].value.u;
+		} else if (inst == SpvOpAtomicISub) {
+			spvm_word value_id = SPVM_READ_WORD(state->code_current);
+			spvm_result_t value = &state->results[value_id];
+
+			for (int i = 0; i < data->member_count; i++)
+				data->members[i].value.u -= value->members[i].value.u;
+		} else if (inst == SpvOpAtomicSMin) {
+			spvm_word value_id = SPVM_READ_WORD(state->code_current);
+			spvm_result_t value = &state->results[value_id];
+
+			for (int i = 0; i < data->member_count; i++)
+				data->members[i].value.s = MIN(value->members[i].value.s, data->members[i].value.s);
+		} else if (inst == SpvOpAtomicUMin) {
+			spvm_word value_id = SPVM_READ_WORD(state->code_current);
+			spvm_result_t value = &state->results[value_id];
+
+			for (int i = 0; i < data->member_count; i++)
+				data->members[i].value.u = MIN(value->members[i].value.u, data->members[i].value.u);
+		} else if (inst == SpvOpAtomicSMax) {
+			spvm_word value_id = SPVM_READ_WORD(state->code_current);
+			spvm_result_t value = &state->results[value_id];
+
+			for (int i = 0; i < data->member_count; i++)
+				data->members[i].value.s = MAX(value->members[i].value.s, data->members[i].value.s);
+		} else if (inst == SpvOpAtomicUMax) {
+			spvm_word value_id = SPVM_READ_WORD(state->code_current);
+			spvm_result_t value = &state->results[value_id];
+
+			for (int i = 0; i < data->member_count; i++)
+				data->members[i].value.u = MAX(value->members[i].value.u, data->members[i].value.u);
+		} else if (inst == SpvOpAtomicAnd) {
+			spvm_word value_id = SPVM_READ_WORD(state->code_current);
+			spvm_result_t value = &state->results[value_id];
+
+			for (int i = 0; i < data->member_count; i++)
+				data->members[i].value.u &= value->members[i].value.u;
+		} else if (inst == SpvOpAtomicOr) {
+			spvm_word value_id = SPVM_READ_WORD(state->code_current);
+			spvm_result_t value = &state->results[value_id];
+
+			for (int i = 0; i < data->member_count; i++)
+				data->members[i].value.u |= value->members[i].value.u;
+		} else if (inst == SpvOpAtomicXor) {
+			spvm_word value_id = SPVM_READ_WORD(state->code_current);
+			spvm_result_t value = &state->results[value_id];
+
+			for (int i = 0; i < data->member_count; i++)
+				data->members[i].value.u ^= value->members[i].value.u;
+		}
+
+		if (shared)
+			spvm_member_memcpy(pointer->members, shared->members, pointer->member_count);
+	} break;
+	case SpvOpAtomicCompareExchange: {
+		spvm_word result_type_id = SPVM_READ_WORD(state->code_current);
+		spvm_word result_id = SPVM_READ_WORD(state->code_current);
+		spvm_word pointer_id = SPVM_READ_WORD(state->code_current);
+		spvm_word memory_id = SPVM_READ_WORD(state->code_current);
+		SPVM_SKIP_WORD(state->code_current);
+		SPVM_SKIP_WORD(state->code_current);
+		spvm_word value_id = SPVM_READ_WORD(state->code_current);
+		spvm_word comparator_id = SPVM_READ_WORD(state->code_current);
+
+		spvm_result_t result = &state->results[result_id];
+		spvm_result_t pointer = &state->results[pointer_id];
+		spvm_result_t value = &state->results[value_id];
+		spvm_result_t comparator = &state->results[comparator_id];
+
+		// copy old value
+		spvm_member_memcpy(result->members, pointer->members, result->member_count);
+
+		bool equals = true;
+		for (int i = 0; i < pointer->member_count; i++) {
+			if (pointer->members[i].value.u != comparator->members[i].value.u) {
+				equals = false;
+				break;
+			}
+		}
+
+		if (equals) {
+			// find shared memory pointer
+			spvm_result_t shared = nullptr;
+			for (ed::DebugInformation::SharedMemoryEntry& entry : dbgr->SharedMemory) {
+				if (pointer_id == entry.Slot) {
+					shared = &entry.Data;
+					break;
+				}
+			}
+			spvm_result_t data = (shared == nullptr) ? pointer : shared;
+
+			// copy data
+			for (int i = 0; i < pointer->member_count; i++)
+				data->members[i].value.u = value->members[i].value.u;
+
+			if (shared)
+				spvm_member_memcpy(pointer->members, shared->members, pointer->member_count);
+		}
+	} break;
+	case SpvOpAtomicStore: {
+		spvm_word pointer_id = SPVM_READ_WORD(state->code_current);
+		SPVM_SKIP_WORD(state->code_current);
+		SPVM_SKIP_WORD(state->code_current);
+		spvm_word value_id = SPVM_READ_WORD(state->code_current);
+
+		
+		spvm_result_t pointer = &state->results[pointer_id];
+		spvm_result_t value = &state->results[value_id];
+
+		// find shared memory pointer
+		spvm_result_t shared = nullptr;
+		for (ed::DebugInformation::SharedMemoryEntry& entry : dbgr->SharedMemory) {
+			if (pointer_id == entry.Slot) {
+				shared = &entry.Data;
+				break;
+			}
+		}
+		spvm_result_t data = (shared == nullptr) ? pointer : shared;
+
+		// copy data
+		for (int i = 0; i < pointer->member_count; i++)
+			data->members[i].value.u = value->members[i].value.u;
+
+		if (shared)
+			spvm_member_memcpy(pointer->members, shared->members, pointer->member_count);
+	} break;
+	}
+}
+
+/* geometry shader callbacks */
+void emitVertex(struct spvm_state* state, spvm_word stream)
+{
+	// TODO: use spvm_word stream
+
+	ed::DebugInformation* dbgr = (ed::DebugInformation*)state->owner->user_data;
+
+	spvm_word mem_count = 0;
+	spvm_member_t glPosObject = spvm_state_get_builtin(state, SpvBuiltInPosition, &mem_count);
+
+	glm::vec4 glPos(0.0f);
+	for (int i = 0; i < mem_count; i++)
+		glPos[i] = glPosObject[i].value.f;
+
+	dbgr->EmitVertex(glPos);
+}
+void endPrimitive(struct spvm_state* state, spvm_word stream)
+{
+	// TODO: use spvm_word stream
+
+	ed::DebugInformation* dbgr = (ed::DebugInformation*)state->owner->user_data;
+	dbgr->EndPrimitive();
+}
+
+bool isPointInTriangle(glm::vec2 p, glm::vec2 p0, glm::vec2 p1, glm::vec2 p2)
+{
+	/* https://stackoverflow.com/questions/2049582/how-to-determine-if-a-point-is-in-a-2d-triangle#:~:text=A%20simple%20way%20is%20to,point%20is%20inside%20the%20triangle. */
+	float s = p0.y * p2.x - p0.x * p2.y + (p2.y - p0.y) * p.x + (p0.x - p2.x) * p.y;
+	float t = p0.x * p1.y - p0.y * p1.x + (p0.y - p1.y) * p.x + (p1.x - p0.x) * p.y;
+
+	if ((s < 0) != (t < 0))
+		return false;
+
+	float a = -p1.y * p2.x + p0.y * (p2.x - p1.x) + p0.x * (p1.y - p2.y) + p1.x * p2.y;
+
+	return a < 0 ? (s <= 0 && s + t >= a) : (s >= 0 && s + t <= a);
+}
+bool isPointOnLine(glm::vec2 p, glm::vec2 p0, glm::vec2 p1)
+{
+	float v = glm::distance(p0, p) + glm::distance(p, p1) - glm::distance(p0, p1);
+	return -0.01 < v && v < 0.01;
+}
 
 namespace ed {
 	DebugInformation::DebugInformation(ObjectManager* objs, RenderEngine* renderer, MessageStack* msgs)
@@ -24,12 +337,16 @@ namespace ed {
 		m_vmImmediate = nullptr;
 		m_shaderImmediate = nullptr;
 		m_msgs = msgs;
+		m_workgroup = nullptr;
+		m_updatedGeometryOutput = false;
 
 		m_vmContext = spvm_context_initialize();
 		m_vmGLSL = spvm_build_glsl450_ext();
 	}
 	DebugInformation::~DebugInformation()
 	{
+		ClearPixelList();
+
 		m_resetVM();
 
 		free(m_vmGLSL);
@@ -38,11 +355,37 @@ namespace ed {
 	
 	void DebugInformation::m_resetVM()
 	{
+		ed::Logger::Get().Log("Resetting the debugger");
+
 		for (spvm_image_t img : m_images) {
 			free(img->data);
 			free(img);
 		}
 		m_images.clear();
+
+		// clear shared memory
+		for (SharedMemoryEntry& entry : SharedMemory)
+			spvm_member_free(entry.Data.members, entry.Data.member_count);
+		SharedMemory.clear();
+
+		// clear workgroup
+		if (m_workgroup) {
+			for (int j = 0; j < m_originalValues.size(); j++)
+			{
+				const OriginalValue& originalData = m_originalValues[j];
+				originalData.State->results[originalData.Slot].members = originalData.Members;
+				originalData.State->results[originalData.Slot].member_count = originalData.MemberCount;
+			}
+			m_originalValues.clear();
+			for (int i = 0; i < m_shader->local_size_x * m_shader->local_size_y * m_shader->local_size_z; i++) {
+				if (m_workgroup[i] == nullptr)
+					continue;
+
+				spvm_state_delete(m_workgroup[i]);
+			}
+			free(m_workgroup);
+			m_workgroup = nullptr;
+		}
 
 		if (m_vm) {
 			spvm_state_delete(m_vm);
@@ -52,17 +395,190 @@ namespace ed {
 			spvm_program_delete(m_shader);
 			m_shader = nullptr;
 		}
+
 	}
 	void DebugInformation::m_setupVM(std::vector<unsigned int>& spv)
 	{
+		ed::Logger::Get().Log("Parsing the SPIR-V and setting up the debugger");
+
 		m_spv = spv;
 		
 		// create program & state
 		m_shader = spvm_program_create(m_vmContext, (spvm_source)m_spv.data(), m_spv.size());
+		m_shader->user_data = this;
+		m_shader->allocate_workgroup_memory = allocateWorkgroupMemory;
+		m_shader->write_workgroup_memory = writeWorkgroupMemory;
+		m_shader->atomic_operation = atomicOperation;
+
 		m_vm = _spvm_state_create_base(m_shader, m_stage == ShaderStage::Pixel, 0);
+		m_vm->control_barrier = controlBarrier;
+		m_vm->emit_vertex = emitVertex;
+		m_vm->end_primitive = endPrimitive;
+		m_shader->allocate_workgroup_memory = nullptr; // "sub-programs" shouldn't handle this anymore
 
 		// link GLSL.std.450
 		spvm_state_set_extension(m_vm, "GLSL.std.450", m_vmGLSL);
+	}
+	void DebugInformation::m_setupWorkgroup()
+	{
+		ed::Logger::Get().Log("Setting up the shader workgroup in the debugger");
+
+		int startX = (m_threadX / m_shader->local_size_x) * m_shader->local_size_x;
+		int startY = (m_threadY / m_shader->local_size_y) * m_shader->local_size_y;
+		int startZ = (m_threadZ / m_shader->local_size_z) * m_shader->local_size_z;
+
+		int groupSize = m_shader->local_size_x * m_shader->local_size_y * m_shader->local_size_z;
+
+		m_workgroup = (spvm_state_t*)calloc(groupSize, sizeof(spvm_state_t));
+
+		for (int id_x = 0; id_x < m_shader->local_size_x; id_x++) {
+			for (int id_y = 0; id_y < m_shader->local_size_y; id_y++) {
+				for (int id_z = 0; id_z < m_shader->local_size_z; id_z++) {
+					int id = id_z * m_shader->local_size_x * m_shader->local_size_y + id_y * m_shader->local_size_x + id_x;
+
+					if (id == m_localThreadIndex)
+						continue;
+
+					m_workgroup[id] = spvm_state_create(m_shader);
+
+					spvm_state_t worker = m_workgroup[id];
+					spvm_result_t glsl_std_450 = spvm_state_get_result(worker, "GLSL.std.450");
+					if (glsl_std_450)
+						glsl_std_450->extension = m_vmGLSL;
+
+					m_setThreadID(worker, startX + id_x, startY + id_y, startZ + id_z, m_numGroupsX, m_numGroupsY, m_numGroupsZ);
+
+					spvm_word fnMain = spvm_state_get_result_location(worker, "main");
+					spvm_state_prepare(worker, fnMain);
+				}
+			}
+		}
+
+		for (int i = 0; i < m_shader->bound; i++) {
+			spvm_result_t slot = &m_vm->results[i];
+			
+			if (slot->pointer) {
+				spvm_result_t pointerInfo = &m_vm->results[slot->pointer];
+
+				bool wasCopied = false;
+				
+				if (pointerInfo->value_type == spvm_value_type_pointer) {
+					spvm_result_t type_info = spvm_state_get_type_info(m_vm->results, pointerInfo);
+					bool isBufferBlock = false;
+
+					for (int i = 0; i < type_info->decoration_count; i++)
+						if (type_info->decorations[i].type == SpvDecorationBufferBlock) {
+							isBufferBlock = true;
+							break;
+						}
+
+					if (pointerInfo->storage_class == SpvStorageClassUniformConstant && !isBufferBlock) {
+						// textures
+						if (type_info->value_type == spvm_value_type_sampled_image || type_info->value_type == spvm_value_type_image) {
+
+							for (int j = 0; j < groupSize; j++)
+								if (m_workgroup[j]) {
+									m_originalValues.push_back(OriginalValue(m_workgroup[j], i, m_workgroup[j]->results[i].member_count, m_workgroup[j]->results[i].members));
+									m_workgroup[j]->results[i].member_count = slot->member_count;
+									m_workgroup[j]->results[i].members = slot->members;
+									wasCopied = true;
+								}
+						}
+					} else if (pointerInfo->storage_class == SpvStorageClassStorageBuffer || isBufferBlock) {
+						// buffers
+						for (int j = 0; j < groupSize; j++)
+							if (m_workgroup[j]) {
+								m_originalValues.push_back(OriginalValue(m_workgroup[j], i, m_workgroup[j]->results[i].member_count, m_workgroup[j]->results[i].members));
+								m_workgroup[j]->results[i].member_count = slot->member_count;
+								m_workgroup[j]->results[i].members = slot->members;
+								wasCopied = true;
+							}
+					}
+				}
+				
+				if (!wasCopied && (pointerInfo->storage_class == SpvStorageClassUniformConstant || pointerInfo->storage_class == SpvStorageClassUniform)) {
+					for (int j = 0; j < groupSize; j++)
+						if (m_workgroup[j])
+							spvm_member_memcpy(m_workgroup[j]->results[i].members, slot->members, slot->member_count);
+				}
+			}
+		}
+	}
+	void DebugInformation::m_setThreadID(spvm_state_t worker, int x, int y, int z, int numGroupsX, int numGroupsY, int numGroupsZ)
+	{
+		if (worker == m_vm) {
+			m_threadX = x;
+			m_threadY = y;
+			m_threadZ = z;
+		}
+
+		int localIndex = (z % worker->owner->local_size_z) * worker->owner->local_size_x * worker->owner->local_size_z + 
+			(y % worker->owner->local_size_y) * worker->owner->local_size_x + 
+			(x % worker->owner->local_size_x);
+
+		if (worker == m_vm)
+			m_localThreadIndex = localIndex;
+
+		// input variables
+		for (spvm_word i = 0; i < worker->owner->bound; i++) {
+			spvm_result_t slot = &worker->results[i];
+			spvm_result_t pointer = nullptr;
+
+			if (slot->pointer)
+				pointer = &worker->results[worker->results[i].pointer];
+
+			// input variable
+			if (pointer) {
+				if (pointer->storage_class == SpvStorageClassInput) {
+					spvm_word builtinType = 0;
+					bool isBuiltin = false;
+					for (spvm_word j = 0; j < slot->decoration_count; j++) {
+						if (slot->decorations[j].type == SpvDecorationBuiltIn) {
+							builtinType = slot->decorations[j].literal1;
+							isBuiltin = true;
+						}
+					}
+
+					if (isBuiltin) {
+						if (builtinType == SpvBuiltInGlobalInvocationId) {
+							if (slot->member_count >= 3) {
+								slot->members[0].value.u = x;
+								slot->members[1].value.u = y;
+								slot->members[2].value.u = z;
+							}
+						} else if (builtinType == SpvBuiltInWorkgroupId) {
+							if (slot->member_count >= 3) {
+								slot->members[0].value.u = x / worker->owner->local_size_x;
+								slot->members[1].value.u = y / worker->owner->local_size_y;
+								slot->members[2].value.u = z / worker->owner->local_size_z;
+							}
+						} else if (builtinType == SpvBuiltInLocalInvocationId) {
+							if (slot->member_count >= 3) {
+								slot->members[0].value.u = x % worker->owner->local_size_x;
+								slot->members[1].value.u = y % worker->owner->local_size_y;
+								slot->members[2].value.u = z % worker->owner->local_size_z;
+							}
+						} else if (builtinType == SpvBuiltInLocalInvocationIndex) {
+							if (slot->member_count >= 1)
+								slot->members[0].value.u = localIndex;
+						} else if (builtinType == SpvBuiltInWorkgroupSize) {
+							if (slot->member_count >= 3) {
+								slot->members[0].value.u = worker->owner->local_size_x;
+								slot->members[1].value.u = worker->owner->local_size_y;
+								slot->members[2].value.u = worker->owner->local_size_z;
+							}
+						} else if (builtinType == SpvBuiltInNumWorkgroups) {
+							if (slot->member_count >= 3) {
+								slot->members[0].value.u = numGroupsX;
+								slot->members[1].value.u = numGroupsY;
+								slot->members[2].value.u = numGroupsZ;
+							}
+						}
+					}
+				}
+			}
+		}
+
 	}
 	void DebugInformation::m_copyUniforms(PipelineItem* owner, PipelineItem* item, PixelInformation* px)
 	{
@@ -72,12 +588,18 @@ namespace ed {
 		if (owner->Type == PipelineItem::ItemType::ShaderPass) {
 			pipe::ShaderPass* pass = (pipe::ShaderPass*)owner->Data;
 			vars = pass->Variables.GetVariables();
-		} else if (owner->Type == PipelineItem::ItemType::PluginItem) {
+		} 
+		else if (owner->Type == PipelineItem::ItemType::ComputePass) {
+			pipe::ComputePass* pass = (pipe::ComputePass*)owner->Data;
+			vars = pass->Variables.GetVariables();
+		}
+		else if (owner->Type == PipelineItem::ItemType::PluginItem) {
 			pipe::PluginItemData* plData = (pipe::PluginItemData*)owner->Data;
 
 			pluginUsesCustomTextures = plData->Owner->PipelineItem_DebugUsesCustomTextures(plData->Type, plData->PluginData);
 
-			plData->Owner->PipelineItem_DebugPrepareVariables(plData->Type, plData->PluginData, item->Name);
+			if (item != nullptr)
+				plData->Owner->PipelineItem_DebugPrepareVariables(plData->Type, plData->PluginData, item->Name);
 			
 			int varCount = plData->Owner->PipelineItem_GetVariableCount(plData->Type, plData->PluginData);
 			vars.resize(varCount);
@@ -125,35 +647,37 @@ namespace ed {
 
 		// update variables
 		// update system variables
-		if (item->Type == PipelineItem::ItemType::Geometry) {
-			pipe::GeometryItem* geoData = reinterpret_cast<pipe::GeometryItem*>(item->Data);
+		if (item) {
+			if (item->Type == PipelineItem::ItemType::Geometry) {
+				pipe::GeometryItem* geoData = reinterpret_cast<pipe::GeometryItem*>(item->Data);
 
-			if (geoData->Type == pipe::GeometryItem::Rectangle) {
-				glm::vec3 scaleRect(geoData->Scale.x * SystemVariableManager::Instance().GetViewportSize().x, geoData->Scale.y * SystemVariableManager::Instance().GetViewportSize().y, 1.0f);
-				glm::vec3 posRect((geoData->Position.x + 0.5f) * m_renderer->GetLastRenderSize().x, (geoData->Position.y + 0.5f) * m_renderer->GetLastRenderSize().y, -1000.0f);
-				SystemVariableManager::Instance().SetGeometryTransform(item, scaleRect, geoData->Rotation, posRect);
-			} else
-				SystemVariableManager::Instance().SetGeometryTransform(item, geoData->Scale, geoData->Rotation, geoData->Position);
+				if (geoData->Type == pipe::GeometryItem::Rectangle) {
+					glm::vec3 scaleRect(geoData->Scale.x * SystemVariableManager::Instance().GetViewportSize().x, geoData->Scale.y * SystemVariableManager::Instance().GetViewportSize().y, 1.0f);
+					glm::vec3 posRect((geoData->Position.x + 0.5f) * m_renderer->GetLastRenderSize().x, (geoData->Position.y + 0.5f) * m_renderer->GetLastRenderSize().y, -1000.0f);
+					SystemVariableManager::Instance().SetGeometryTransform(item, scaleRect, geoData->Rotation, posRect);
+				} else
+					SystemVariableManager::Instance().SetGeometryTransform(item, geoData->Scale, geoData->Rotation, geoData->Position);
 
-			SystemVariableManager::Instance().SetPicked(m_renderer->IsPicked(item));
-		} else if (item->Type == PipelineItem::ItemType::Model) {
-			pipe::Model* objData = reinterpret_cast<pipe::Model*>(item->Data);
+				SystemVariableManager::Instance().SetPicked(m_renderer->IsPicked(item));
+			} else if (item->Type == PipelineItem::ItemType::Model) {
+				pipe::Model* objData = reinterpret_cast<pipe::Model*>(item->Data);
 
-			SystemVariableManager::Instance().SetPicked(m_renderer->IsPicked(item));
-			SystemVariableManager::Instance().SetGeometryTransform(item, objData->Scale, objData->Rotation, objData->Position);
-		} else if (item->Type == PipelineItem::ItemType::VertexBuffer) {
-			pipe::VertexBuffer* vbData = reinterpret_cast<pipe::VertexBuffer*>(item->Data);
+				SystemVariableManager::Instance().SetPicked(m_renderer->IsPicked(item));
+				SystemVariableManager::Instance().SetGeometryTransform(item, objData->Scale, objData->Rotation, objData->Position);
+			} else if (item->Type == PipelineItem::ItemType::VertexBuffer) {
+				pipe::VertexBuffer* vbData = reinterpret_cast<pipe::VertexBuffer*>(item->Data);
 
-			SystemVariableManager::Instance().SetPicked(m_renderer->IsPicked(item));
-			SystemVariableManager::Instance().SetGeometryTransform(item, vbData->Scale, vbData->Rotation, vbData->Position);
-		} else if (item->Type == PipelineItem::ItemType::PluginItem) {
-			pipe::PluginItemData* plData = reinterpret_cast<pipe::PluginItemData*>(item->Data);
-			
-			float scale[3], pos[3], rota[3];
-			plData->Owner->PipelineItem_GetTransform(plData->Type, plData->PluginData, pos, scale, rota);
+				SystemVariableManager::Instance().SetPicked(m_renderer->IsPicked(item));
+				SystemVariableManager::Instance().SetGeometryTransform(item, vbData->Scale, vbData->Rotation, vbData->Position);
+			} else if (item->Type == PipelineItem::ItemType::PluginItem) {
+				pipe::PluginItemData* plData = reinterpret_cast<pipe::PluginItemData*>(item->Data);
 
-			SystemVariableManager::Instance().SetPicked(m_renderer->IsPicked(item));
-			SystemVariableManager::Instance().SetGeometryTransform(item, glm::make_vec3(scale), glm::make_vec3(rota), glm::make_vec3(pos));
+				float scale[3], pos[3], rota[3];
+				plData->Owner->PipelineItem_GetTransform(plData->Type, plData->PluginData, pos, scale, rota);
+
+				SystemVariableManager::Instance().SetPicked(m_renderer->IsPicked(item));
+				SystemVariableManager::Instance().SetGeometryTransform(item, glm::make_vec3(scale), glm::make_vec3(rota), glm::make_vec3(pos));
+			}
 		}
 
 		// copy variable values
@@ -330,15 +854,18 @@ namespace ed {
 				break;
 			}
 
-			// update system variable value
-			SystemVariableManager::Instance().Update(var, item);
-
-			// item variable value
 			ShaderVariable* actualVar = var;
-			for (const auto& iVar : itemVars) {
-				if (iVar.Item == item && iVar.Variable == var) {
-					actualVar = iVar.NewValue;
-					break;
+
+			if (item) {
+				// update system variable value
+				SystemVariableManager::Instance().Update(var, item);
+
+				// item variable value
+				for (const auto& iVar : itemVars) {
+					if (iVar.Item == item && iVar.Variable == var) {
+						actualVar = iVar.NewValue;
+						break;
+					}
 				}
 			}
 
@@ -359,7 +886,7 @@ namespace ed {
 			}
 		}
 
-		// textures, buffers [TODO], etc...
+		// textures, buffers, etc...
 		int sampler2Dloc = 0;
 		for (spvm_word i = 0; i < m_shader->bound; i++) {
 			spvm_result_t slot = &m_vm->results[i];
@@ -387,7 +914,36 @@ namespace ed {
 							}
 						}
 
-						if (sampler2Dloc >= srvs.size() && !pluginUsesCustomTextures) {
+						GLuint textureID = 0;
+						bool wrongBind = false;
+
+						bool isSampled = false;
+						if (m_stage != ShaderStage::Compute || type_info->value_type == spvm_value_type_sampled_image || (slot->image_info != nullptr && slot->image_info->sampled == 1))
+							isSampled = true;
+
+						if (isSampled) { // srvs
+							if (sampler2Dloc < srvs.size())
+								textureID = srvs[sampler2Dloc];
+							else
+								wrongBind = true;
+						} else { // ubos
+							if (sampler2Dloc < ubos.size())
+								textureID = ubos[sampler2Dloc];
+							else
+								wrongBind = true;
+						}
+
+						if (!wrongBind && textureID != 0) {
+							ObjectManagerItem* itemData = m_objs->GetByTextureID(textureID);
+							if (itemData) {
+								if (!(itemData->Type == ObjectType::Texture || itemData->Type == ObjectType::RenderTexture || itemData->Type == ObjectType::Image || itemData->Type == ObjectType::Image3D || itemData->Type == ObjectType::KeyboardTexture)) {
+									wrongBind = true;
+									textureID = 0;
+								}
+							}
+						}
+
+						if ((wrongBind || textureID == 0) && !pluginUsesCustomTextures) {
 							spvm_image_t img = (spvm_image_t)malloc(sizeof(spvm_image));
 
 							// get texture size
@@ -406,6 +962,9 @@ namespace ed {
 							sampler2Dloc++;
 						} 
 						else {
+							if (slot->members == nullptr) // if slot->members == nullptr it means that it's a pointer/function argument
+								continue;
+
 							spvm_image_t img = (spvm_image_t)malloc(sizeof(spvm_image));
 							
 							if (type_info->image_info == NULL)
@@ -463,20 +1022,19 @@ namespace ed {
 							} else {
 								// cubemaps
 								if (type_info->image_info->dim == SpvDimCube) {
-									std::string itemName = m_objs->GetItemNameByTextureID(srvs[sampler2Dloc]);
-									ObjectManagerItem* itemData = m_objs->GetObjectManagerItem(itemName);
+									ObjectManagerItem* itemData = m_objs->GetByTextureID(textureID);
 
 									// get texture size
 									glm::ivec2 size(1, 1);
 									if (itemData != nullptr) {
 										if (itemData->RT != nullptr)
-											size = m_objs->GetRenderTextureSize(itemName);
+											size = m_objs->GetRenderTextureSize(itemData);
 										else if (itemData->Image != nullptr)
 											size = itemData->Image->Size;
 										else if (itemData->Sound != nullptr)
 											size = glm::ivec2(512, 2);
 										else
-											size = itemData->ImageSize;
+											size = itemData->TextureSize;
 									}
 									imgSize.x = size.x;
 									imgSize.y = size.y;
@@ -485,7 +1043,7 @@ namespace ed {
 									imgData = (float*)malloc(sizeof(float) * size.x * size.y * 6 * 4); // 6 faces
 
 									// get the data from the GPU
-									glBindTexture(GL_TEXTURE_CUBE_MAP, srvs[sampler2Dloc]);
+									glBindTexture(GL_TEXTURE_CUBE_MAP, textureID);
 									for (int i = 0; i < 6; i++)
 										glGetTexImage(GL_TEXTURE_CUBE_MAP_POSITIVE_X + i, 0, GL_RGBA, GL_FLOAT, imgData + size.x * size.y * 4 * i);
 									glBindTexture(GL_TEXTURE_CUBE_MAP, 0);
@@ -493,8 +1051,7 @@ namespace ed {
 								// 3d textures
 								else if (type_info->image_info->dim == SpvDim3D) {
 									// get texture size
-									std::string itemName = m_objs->GetItemNameByTextureID(srvs[sampler2Dloc]);
-									ObjectManagerItem* itemData = m_objs->GetObjectManagerItem(itemName);
+									ObjectManagerItem* itemData = m_objs->GetByTextureID(textureID);
 									
 									if (itemData != nullptr && itemData->Image3D != nullptr)
 										imgSize = itemData->Image3D->Size;
@@ -502,25 +1059,24 @@ namespace ed {
 									imgData = (float*)malloc(sizeof(float) * imgSize.x * imgSize.y * imgSize.z * 4);
 
 									// get the data from the GPU
-									glBindTexture(GL_TEXTURE_3D, srvs[sampler2Dloc]);
+									glBindTexture(GL_TEXTURE_3D, textureID);
 									glGetTexImage(GL_TEXTURE_3D, 0, GL_RGBA, GL_FLOAT, imgData);
 									glBindTexture(GL_TEXTURE_3D, 0);
 								}
 								// 2d textures
 								else {
 									// get texture size
-									std::string itemName = m_objs->GetItemNameByTextureID(srvs[sampler2Dloc]);
-									ObjectManagerItem* itemData = m_objs->GetObjectManagerItem(itemName);
+									ObjectManagerItem* itemData = m_objs->GetByTextureID(textureID);
 									glm::ivec2 size(1, 1);
 									if (itemData != nullptr) {
 										if (itemData->RT != nullptr)
-											size = m_objs->GetRenderTextureSize(itemName);
+											size = m_objs->GetRenderTextureSize(itemData);
 										else if (itemData->Image != nullptr)
 											size = itemData->Image->Size;
 										else if (itemData->Sound != nullptr)
 											size = glm::ivec2(512, 2);
 										else
-											size = itemData->ImageSize;
+											size = itemData->TextureSize;
 									}
 									imgSize.x = size.x;
 									imgSize.y = size.y;
@@ -528,7 +1084,7 @@ namespace ed {
 									imgData = (float*)malloc(sizeof(float) * size.x * size.y * 4);
 
 									// get the data from the GPU
-									glBindTexture(GL_TEXTURE_2D, srvs[sampler2Dloc]);
+									glBindTexture(GL_TEXTURE_2D, textureID);
 									glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_FLOAT, imgData);
 									glBindTexture(GL_TEXTURE_2D, 0);
 								}
@@ -542,7 +1098,7 @@ namespace ed {
 							if (pluginUsesCustomTextures)
 								img->user_data = (void*)pluginCustomTexture;
 							else
-								img->user_data = (void*)srvs[sampler2Dloc];
+								img->user_data = (void*)textureID;
 
 							slot->members[0].image_data = img;
 							m_images.push_back(img);
@@ -560,7 +1116,7 @@ namespace ed {
 					}
 
 					if (binding < ubos.size()) {
-						ed::BufferObject* obj = m_objs->GetBuffer(m_objs->GetBufferNameByID(ubos[binding]));
+						ed::BufferObject* obj = m_objs->GetByBufferID(ubos[binding])->Buffer;
 
 						float* data = (float*)calloc(1, obj->Size);
 						glBindBuffer(GL_SHADER_STORAGE_BUFFER, obj->ID);
@@ -715,7 +1271,7 @@ namespace ed {
 					outString << mems[i].value.s << " ";
 				allRec = false;
 			} else {
-				if (type->value_type == spvm_value_type_runtime_array && i > 2 && i < mem_count - 3)
+				if ((type->value_type == spvm_value_type_runtime_array || type->value_type == spvm_value_type_array) && i > 2 && i < mem_count - 3)
 					continue;
 
 				std::string newPrefix = prefix;
@@ -724,7 +1280,7 @@ namespace ed {
 				if (type->value_type == spvm_value_type_matrix || type->value_type == spvm_value_type_array || type->value_type == spvm_value_type_runtime_array)
 					newPrefix += "[" + std::to_string(i) + "]";
 
-				if (type->value_type == spvm_value_type_runtime_array && mem_count > 6 && i == mem_count - 3)
+				if ((type->value_type == spvm_value_type_runtime_array || type->value_type == spvm_value_type_array) && mem_count > 6 && i == mem_count - 3)
 					outString << "...\n";
 
 				GetVariableValueAsString(outString, state, vtype, mems[i].members, mems[i].member_count, newPrefix);
@@ -740,7 +1296,7 @@ namespace ed {
 
 		bool usePlugin = false;
 		ed::IPlugin2* plugin2 = nullptr;
-		if (m_pixel->Pass->Type == PipelineItem::ItemType::PluginItem) {
+		if (m_pixel != nullptr && m_pixel->Pass == nullptr && m_pixel->Pass->Type == PipelineItem::ItemType::PluginItem) {
 			pipe::PluginItemData* plData = (pipe::PluginItemData*)m_pixel->Pass->Data;
 			if (plData->Owner->GetVersion() >= 2) {
 				plugin2 = ((ed::IPlugin2*)plData->Owner);
@@ -910,8 +1466,10 @@ namespace ed {
 		// uniforms
 		m_copyUniforms(owner, item, px);
 	}
-	void DebugInformation::SetVertexShaderInput(PipelineItem* pass, eng::Model::Mesh::Vertex vertex, int vertexID, int instanceID, ed::BufferObject* instanceBuffer)
+	void DebugInformation::SetVertexShaderInput(PixelInformation& pixel, int vertexIndex)
 	{
+		m_pixel = &pixel;
+
 		// input variables
 		for (spvm_word i = 0; i < m_shader->bound; i++) {
 			spvm_result_t slot = &m_vm->results[i];
@@ -937,17 +1495,20 @@ namespace ed {
 
 				if (hasLocation) {
 					glm::vec4 value(0.0f);
+					size_t layOffset = 0;
 
 					InputLayoutValue inputType = InputLayoutValue::MaxCount;
 
-					if (pass->Type == PipelineItem::ItemType::ShaderPass) {
-						pipe::ShaderPass* passData = (pipe::ShaderPass*)pass->Data;
-						if (location < passData->InputLayout.size())
+					if (pixel.Pass->Type == PipelineItem::ItemType::ShaderPass) {
+						pipe::ShaderPass* passData = (pipe::ShaderPass*)pixel.Pass->Data;
+						if (location < passData->InputLayout.size()) {
 							inputType = passData->InputLayout[location].Value;
-						else if (instanceBuffer != nullptr) {
+							for (spvm_word j = 0; j < location; j++)
+								layOffset += InputLayoutItem::GetValueSize(passData->InputLayout[j].Value);
+						} else if (pixel.InstanceBuffer != nullptr) {
 							int bufferLocation = location - passData->InputLayout.size();
 
-							std::vector<ShaderVariable::ValueType> tData = m_objs->ParseBufferFormat(instanceBuffer->ViewFormat);
+							std::vector<ShaderVariable::ValueType> tData = m_objs->ParseBufferFormat(((ed::BufferObject*)pixel.InstanceBuffer)->ViewFormat);
 
 							int stride = 0;
 							for (const auto& dataEl : tData)
@@ -955,8 +1516,8 @@ namespace ed {
 
 							GLfloat* bufPtr = (GLfloat*)malloc(stride);
 
-							glBindBuffer(GL_ARRAY_BUFFER, instanceBuffer->ID);
-							glGetBufferSubData(GL_ARRAY_BUFFER, instanceID * stride, stride, &bufPtr[0]);
+							glBindBuffer(GL_ARRAY_BUFFER, ((ed::BufferObject*)pixel.InstanceBuffer)->ID);
+							glGetBufferSubData(GL_ARRAY_BUFFER, pixel.InstanceID * stride, stride, &bufPtr[0]);
 							glBindBuffer(GL_ARRAY_BUFFER, 0);
 
 							int iOffset = 0;
@@ -980,8 +1541,8 @@ namespace ed {
 
 							free(bufPtr);
 						}
-					} else if (pass->Type == PipelineItem::ItemType::PluginItem) {
-						pipe::PluginItemData* plData = (pipe::PluginItemData*)pass->Data;
+					} else if (pixel.Pass->Type == PipelineItem::ItemType::PluginItem) {
+						pipe::PluginItemData* plData = (pipe::PluginItemData*)pixel.Pass->Data;
 						if (location < plData->Owner->PipelineItem_GetInputLayoutSize(plData->Type, plData->PluginData)) {
 							plugin::InputLayoutItem inputItem;
 							plData->Owner->PipelineItem_GetInputLayoutItem(plData->Type, plData->PluginData, location, inputItem);
@@ -991,26 +1552,55 @@ namespace ed {
 					}
 
 					switch (inputType) {
-					case InputLayoutValue::Position: value = glm::vec4(vertex.Position, 0.0f); break;
-					case InputLayoutValue::Normal: value = glm::vec4(vertex.Normal, 0.0f); break;
-					case InputLayoutValue::Texcoord: value = glm::vec4(vertex.TexCoords, 0.0f, 0.0f); break;
-					case InputLayoutValue::Tangent: value = glm::vec4(vertex.Tangent, 0.0f); break;
-					case InputLayoutValue::Binormal: value = glm::vec4(vertex.Binormal, 0.0f); break;
-					case InputLayoutValue::Color: value = glm::vec4(vertex.Color); break;
-					default: break;
+					case InputLayoutValue::Position: value = glm::vec4(pixel.Vertex[vertexIndex].Position, 0.0f); break;
+					case InputLayoutValue::Normal: value = glm::vec4(pixel.Vertex[vertexIndex].Normal, 0.0f); break;
+					case InputLayoutValue::Texcoord: value = glm::vec4(pixel.Vertex[vertexIndex].TexCoords, 0.0f, 0.0f); break;
+					case InputLayoutValue::Tangent: value = glm::vec4(pixel.Vertex[vertexIndex].Tangent, 0.0f); break;
+					case InputLayoutValue::Binormal: value = glm::vec4(pixel.Vertex[vertexIndex].Binormal, 0.0f); break;
+					case InputLayoutValue::Color: value = glm::vec4(pixel.Vertex[vertexIndex].Color); break;
+					default: {
+						ed::BufferObject* vbData = nullptr;
+
+						if (pixel.Object != nullptr && pixel.Object->Type == PipelineItem::ItemType::VertexBuffer)
+							vbData = (BufferObject*)((pipe::VertexBuffer*)pixel.Object->Data)->Buffer;
+
+						if (vbData != nullptr) {
+							std::vector<ShaderVariable::ValueType> tData = m_objs->ParseBufferFormat(vbData->ViewFormat);
+
+							int stride = 0;
+							for (const auto& dataEl : tData)
+								stride += ShaderVariable::GetSize(dataEl, true);
+
+							GLfloat* bufPtr = (GLfloat*)malloc(pixel.VertexCount * stride);
+
+							glBindBuffer(GL_ARRAY_BUFFER, vbData->ID);
+							glGetBufferSubData(GL_ARRAY_BUFFER, pixel.VertexID * stride, pixel.VertexCount * stride, &bufPtr[0]);
+							glBindBuffer(GL_ARRAY_BUFFER, 0);
+
+							int valCount = 0;
+							if (inputType >= InputLayoutValue::BufferInt && inputType <= InputLayoutValue::BufferInt4)
+								valCount = ((int)inputType - (int)InputLayoutValue::BufferInt) + 1;
+							else if (inputType >= InputLayoutValue::BufferFloat && inputType <= InputLayoutValue::BufferFloat4)
+								valCount = ((int)inputType - (int)InputLayoutValue::BufferFloat) + 1;
+
+							for (int v = 0; v < valCount; v++)
+								value[v] = *(bufPtr + layOffset + v);
+
+							free(bufPtr);
+						}
+					} break;
 					}
 
 					for (spvm_word j = 0; j < slot->member_count; j++)
 						slot->members[j].value.f = value[j];
 				} else if (isBuiltin) {
 					if (builtinType == SpvBuiltInVertexId)
-						slot->members[0].value.s = vertexID;
+						slot->members[0].value.s = pixel.VertexID + vertexIndex;
 					else if (builtinType == SpvBuiltInInstanceId)
-						slot->members[0].value.s = instanceID;
+						slot->members[0].value.s = pixel.InstanceID;
 				}
 			}
 		}
-
 	}
 	glm::vec4 DebugInformation::ExecuteVertexShader()
 	{
@@ -1041,7 +1631,21 @@ namespace ed {
 	}
 	void DebugInformation::CopyVertexShaderOutput(PixelInformation& px, int vertexIndex)
 	{
+		// free the memory
+		for (auto& vsOut : px.VertexShaderOutput[vertexIndex]) {
+			if (vsOut.name) {
+				free(vsOut.name);
+				vsOut.name = nullptr;
+			}
+			if (vsOut.members) {
+				spvm_member_free(vsOut.members, vsOut.member_count);
+				vsOut.member_count = 0;
+				vsOut.members = nullptr;
+			}
+		}
 		px.VertexShaderOutput[vertexIndex].clear();
+
+		// copy the output registers
 		for (int i = 0; i < m_shader->bound; i++) {
 			spvm_result_t slot = &m_vm->results[i];
 			spvm_result_t pointer = nullptr;
@@ -1064,9 +1668,26 @@ namespace ed {
 				copy.decoration_count = 0;
 				copy.members = nullptr;
 
-				if (slot->name) { // TODO: mem leak
-					copy.name = (spvm_string)calloc(1, strlen(slot->name) + 1);
-					strcpy(copy.name, slot->name);
+				const char* nameCpy = slot->name;
+				if (px.GeometryShaderUsed) { // get interface block
+					if (pointer->pointer && slot->name && strcmp(slot->name, "") != 0) { // there surely must be a better way to do this?
+						spvm_result_t block = &m_vm->results[pointer->pointer];
+						bool isBlock = false;
+
+						for (spvm_word j = 0; j < block->decoration_count; j++)
+							if (block->decorations[j].type == SpvDecorationBlock) {
+								isBlock = true;
+								break;
+							}
+
+						if (isBlock && block->name)
+							nameCpy = block->name;
+					}
+				}
+
+				if (nameCpy) {
+					copy.name = (spvm_string)calloc(1, strlen(nameCpy) + 1);
+					strcpy(copy.name, nameCpy);
 				}
 
 				// hax: store location in spvm_result::return_type -> this can be done in a better way, but im lazy right now [TODO]
@@ -1171,11 +1792,11 @@ namespace ed {
 		glm::vec2 pxPosition = glm::vec2(m_pixel->Coordinate + offset) / glm::vec2(m_pixel->RenderTextureSize - 1);
 
 		// weigths
-		glm::vec2 scrnPos1 = m_getScreenCoord(m_pixel->glPosition[0]);
-		glm::vec2 scrnPos2 = m_getScreenCoord(m_pixel->glPosition[1]);
-		glm::vec2 scrnPos3 = m_getScreenCoord(m_pixel->glPosition[2]);
+		glm::vec2 scrnPos1 = m_getScreenCoord(m_pixel->FinalPosition[0]);
+		glm::vec2 scrnPos2 = m_getScreenCoord(m_pixel->FinalPosition[1]);
+		glm::vec2 scrnPos3 = m_getScreenCoord(m_pixel->FinalPosition[2]);
 		glm::vec3 weights = m_getWeights(scrnPos1, scrnPos2, scrnPos3, pxPosition);
-		weights *= glm::vec3(m_pixel->glPosition[0].w == 0.0f ? 0.0f : (1.0f / m_pixel->glPosition[0].w), m_pixel->glPosition[1].w == 0.0f ? 0.0f : (1.0f / m_pixel->glPosition[1].w), m_pixel->glPosition[2].w == 0.0f ? 0.0f : (1.0f / m_pixel->glPosition[2].w));
+		weights *= glm::vec3(m_pixel->FinalPosition[0].w == 0.0f ? 0.0f : (1.0f / m_pixel->FinalPosition[0].w), m_pixel->FinalPosition[1].w == 0.0f ? 0.0f : (1.0f / m_pixel->FinalPosition[1].w), m_pixel->FinalPosition[2].w == 0.0f ? 0.0f : (1.0f / m_pixel->FinalPosition[2].w));
 	
 		return weights;
 	}
@@ -1184,6 +1805,10 @@ namespace ed {
 		// !!! m_pixel must be set !!!
 
 		float weightSum = weights.x + weights.y + weights.z;
+
+		auto* mainStageOutput = &m_pixel->VertexShaderOutput[0];
+		if (m_pixel->GeometryShaderUsed && m_pixel->GeometrySelectedPrimitive != -1 && m_pixel->GeometrySelectedVertex != -1)
+			mainStageOutput = &m_pixel->GeometryOutput[m_pixel->GeometrySelectedPrimitive].Output[m_pixel->GeometrySelectedVertex];
 
 		// match the ps input with vs output
 		for (int i = 0; i < state->owner->bound; i++) {
@@ -1205,8 +1830,8 @@ namespace ed {
 					}
 
 				// get vs output index
-				for (int j = 0; j < m_pixel->VertexShaderOutput[0].size(); j++) {
-					const struct spvm_result* vsOutput = &m_pixel->VertexShaderOutput[0][j];
+				for (int j = 0; j < mainStageOutput->size(); j++) {
+					const struct spvm_result* vsOutput = &(*mainStageOutput)[j];
 					if (vsOutput->return_type == loc) {
 						if (loc == -1) {
 							if (vsOutput->name && slot->name)
@@ -1223,10 +1848,30 @@ namespace ed {
 
 				// copy and interpolate values
 				if (outputIndex >= 0) {
-					const struct spvm_result* value0 = m_pixel->VertexShaderOutput[0].empty() ? nullptr : &m_pixel->VertexShaderOutput[0][outputIndex];
-					const struct spvm_result* value1 = m_pixel->VertexShaderOutput[1].empty() ? nullptr : &m_pixel->VertexShaderOutput[1][outputIndex];
-					const struct spvm_result* value2 = m_pixel->VertexShaderOutput[2].empty() ? nullptr : &m_pixel->VertexShaderOutput[2][outputIndex];
+					auto* outputPtr0 = &m_pixel->VertexShaderOutput[0];
+					auto* outputPtr1 = &m_pixel->VertexShaderOutput[1];
+					auto* outputPtr2 = &m_pixel->VertexShaderOutput[2];
 
+					if (m_pixel->GeometryShaderUsed && m_pixel->GeometrySelectedPrimitive != -1 && m_pixel->GeometrySelectedVertex != -1) {
+						if (m_pixel->GeometryOutputType == GeometryShaderOutput::Points) {
+							outputPtr0 = &m_pixel->GeometryOutput[m_pixel->GeometrySelectedPrimitive].Output[m_pixel->GeometrySelectedVertex];
+							outputPtr1 = nullptr;
+							outputPtr2 = nullptr;
+						} else if (m_pixel->GeometryOutputType == GeometryShaderOutput::LineStrip) {
+							outputPtr0 = &m_pixel->GeometryOutput[m_pixel->GeometrySelectedPrimitive].Output[m_pixel->GeometrySelectedVertex - 1];
+							outputPtr1 = &m_pixel->GeometryOutput[m_pixel->GeometrySelectedPrimitive].Output[m_pixel->GeometrySelectedVertex];
+							outputPtr2 = nullptr;
+						} else if (m_pixel->GeometryOutputType == GeometryShaderOutput::TriangleStrip) {
+							outputPtr0 = &m_pixel->GeometryOutput[m_pixel->GeometrySelectedPrimitive].Output[m_pixel->GeometrySelectedVertex - 2];
+							outputPtr1 = &m_pixel->GeometryOutput[m_pixel->GeometrySelectedPrimitive].Output[m_pixel->GeometrySelectedVertex - 1];
+							outputPtr2 = &m_pixel->GeometryOutput[m_pixel->GeometrySelectedPrimitive].Output[m_pixel->GeometrySelectedVertex];
+						}
+					}
+
+					const struct spvm_result* value0 = (outputPtr0 == nullptr || outputPtr0->empty()) ? nullptr : &(*outputPtr0)[outputIndex];
+					const struct spvm_result* value1 = (outputPtr1 == nullptr || outputPtr1->empty()) ? nullptr : &(*outputPtr1)[outputIndex];
+					const struct spvm_result* value2 = (outputPtr2 == nullptr || outputPtr2->empty()) ? nullptr : &(*outputPtr2)[outputIndex];
+					
 					// get type
 					spvm_result_t memType = spvm_state_get_type_info(state->results, pointer);
 					spvm_value_type elType = (spvm_value_type)memType->value_type;
@@ -1311,6 +1956,247 @@ namespace ed {
 		return glm::clamp(ret, 0.0f, 1.0f);
 	}
 
+	void DebugInformation::PrepareGeometryShader(PipelineItem* owner, PipelineItem* item, PixelInformation* px)
+	{
+		m_stage = ShaderStage::Geometry;
+
+		m_resetVM();
+		if (owner->Type == PipelineItem::ItemType::ShaderPass)
+			m_setupVM(((pipe::ShaderPass*)owner->Data)->GSSPV);
+		else if (owner->Type == PipelineItem::ItemType::PluginItem) {
+			pipe::PluginItemData* plData = (pipe::PluginItemData*)owner->Data;
+
+			unsigned int spvSize = plData->Owner->PipelineItem_GetSPIRVSize(plData->Type, plData->PluginData, plugin::ShaderStage::Geometry);
+			std::vector<unsigned int> spv;
+			if (spvSize != 0) {
+				unsigned int* spvPtr = plData->Owner->PipelineItem_GetSPIRV(plData->Type, plData->PluginData, plugin::ShaderStage::Geometry);
+				spv = std::vector<unsigned int>(spvPtr, spvPtr + spvSize);
+			}
+			m_setupVM(spv);
+		}
+
+		// uniforms
+		m_copyUniforms(owner, item, px);
+	}
+	void DebugInformation::SetGeometryShaderInput(PixelInformation& pixel)
+	{
+		m_pixel = &pixel;
+
+		// clear some old info
+		for (auto& prim : pixel.GeometryOutput)
+			for (int i = 0; i < prim.Output.size(); i++)
+				for (auto& out : prim.Output[i]) {
+					if (out.name) {
+						free(out.name);
+						out.name = nullptr;
+					}
+					if (out.members) {
+						spvm_member_free(out.members, out.member_count);
+						out.member_count = 0;
+						out.members = nullptr;
+					}
+				}
+		pixel.GeometryOutput.clear();
+
+		// fill some info into PixelInformation
+		if (m_vm) {
+			if (m_vm->owner->geometry_output == SpvExecutionModeOutputPoints)
+				pixel.GeometryOutputType = GeometryShaderOutput::Points;
+			else if (m_vm->owner->geometry_output == SpvExecutionModeOutputTriangleStrip)
+				pixel.GeometryOutputType = GeometryShaderOutput::TriangleStrip;
+			else if (m_vm->owner->geometry_output == SpvExecutionModeOutputLineStrip)
+				pixel.GeometryOutputType = GeometryShaderOutput::LineStrip;
+			pixel.GeometryOutput.push_back(GeometryShaderPrimitive());
+		}
+		m_updatedGeometryOutput = true;
+
+		// input variables
+		for (spvm_word i = 0; i < m_shader->bound; i++) {
+			spvm_result_t slot = &m_vm->results[i];
+			spvm_result_t pointer = nullptr;
+
+			if (slot->pointer)
+				pointer = &m_vm->results[m_vm->results[i].pointer];
+
+			// input variable
+			if (pointer && pointer->storage_class == SpvStorageClassInput) {
+				spvm_word location = 0, builtinType = 0;
+				bool hasLocation = false, isBuiltin = false;
+				for (spvm_word j = 0; j < slot->decoration_count; j++) {
+					if (slot->decorations[j].type == SpvDecorationLocation) {
+						location = slot->decorations[j].literal1;
+						hasLocation = true;
+					} else if (slot->decorations[j].type == SpvDecorationBuiltIn) {
+						builtinType = slot->decorations[j].literal1;
+						isBuiltin = true;
+					}
+				}
+
+				if (slot->name && strcmp(slot->name, "gl_in") == 0) {
+					for (spvm_word vert = 0; vert < slot->member_count; vert++) {
+						spvm_member_t gl_PerVertex = &slot->members[vert];
+						spvm_result_t gl_PerVertex_Type = &m_vm->results[gl_PerVertex->type];
+
+						for (spvm_word j = 0; j < gl_PerVertex->member_count; j++) {
+							bool is_glPosition = false;
+
+							for (spvm_word k = 0; k < gl_PerVertex_Type->decoration_count; k++) {
+								if (gl_PerVertex_Type->decorations[k].index == j) {
+									if (gl_PerVertex_Type->decorations[k].type == SpvDecorationBuiltIn && gl_PerVertex_Type->decorations[k].literal1 == SpvBuiltInPosition)
+										is_glPosition = true;
+								}
+							}
+
+							// TODO: gl_PointSize, gl_ClipDistance
+
+							if (is_glPosition) {
+								spvm_member_t gl_Position = gl_PerVertex->members[j].members;
+								spvm_word gl_Position_comps = gl_PerVertex->members[j].member_count;
+
+								for (spvm_word k = 0; k < gl_Position_comps; k++)
+									gl_Position[k].value.f = pixel.VertexShaderPosition[vert][k];
+							}
+						}
+					}
+				} else {
+					const char* blockName = nullptr;
+					spvm_result_t currentBlock = slot;
+					
+					// find the interface block name
+					do {
+						currentBlock = &m_vm->results[currentBlock->pointer];
+
+						if (currentBlock->name) {
+							blockName = currentBlock->name;
+							break;
+						}
+					} while (currentBlock->pointer);
+
+					if (blockName == nullptr)
+						blockName = slot->name;
+
+					// copy the VS shader output
+					for (spvm_word vert = 0; vert < slot->member_count; vert++) {
+						// find the interface block from the VertexShaderOutput
+						spvm_result_t blockData = nullptr;
+						for (spvm_word j = 0; j < pixel.VertexShaderOutput[vert].size(); j++) {
+							const char* vsOutName = pixel.VertexShaderOutput[vert][j].name;
+
+							// check by name or by location
+							if ((vsOutName && blockName && strcmp(vsOutName, blockName) == 0) ||
+								(pixel.VertexShaderOutput[vert][j].return_type != -1 && pixel.VertexShaderOutput[vert][j].return_type == location)) {
+								blockData = &pixel.VertexShaderOutput[vert][j];
+								break;
+							}
+						}
+
+						if (blockData && slot->members[vert].member_count == blockData->member_count)
+							spvm_member_memcpy(slot->members[vert].members, blockData->members, blockData->member_count);
+					}
+				}
+			}
+		}
+	}
+	void DebugInformation::ExecuteGeometryShader()
+	{
+		if (m_vm == nullptr)
+			return;
+
+		spvm_word fnMain = spvm_state_get_result_location(m_vm, "main");
+		if (fnMain == 0)
+			return;
+
+		spvm_state_prepare(m_vm, fnMain);
+		spvm_state_call_function(m_vm);
+
+		// check where the new primitive is located
+		float depth = INFINITY;
+		for (int p = 0; p < m_pixel->GeometryOutput.size(); p++) {
+			auto* prim = &m_pixel->GeometryOutput[p];
+
+			// triangles
+			if (m_pixel->GeometryOutputType == GeometryShaderOutput::TriangleStrip) {
+				for (int v = 2; v < prim->Position.size(); v++) {
+					glm::vec4 p0 = (prim->Position[v - 2] / prim->Position[v - 2].w + 1.0f) * 0.5f;
+					glm::vec4 p1 = (prim->Position[v - 1] / prim->Position[v - 1].w + 1.0f) * 0.5f;
+					glm::vec4 p2 = (prim->Position[v] / prim->Position[v].w + 1.0f) * 0.5f;
+
+					if (isPointInTriangle(m_pixel->RelativeCoordinate, p0, p1, p2)) {
+						if ((p0.z + p1.z + p2.z) / 3.0f < depth) { // TODO: this is obviously inaccurate, we should calculate Z that is near the RelativeCoordinate
+							depth = (p0.z + p1.z + p2.z) / 3.0f;
+							m_pixel->GeometrySelectedPrimitive = p;
+							m_pixel->GeometrySelectedVertex = v;
+
+							m_pixel->FinalPosition[0] = prim->Position[v - 2];
+							m_pixel->FinalPosition[1] = prim->Position[v - 1];
+							m_pixel->FinalPosition[2] = prim->Position[v];
+						}
+					}
+				}
+			}
+
+			// lines
+			else if (m_pixel->GeometryOutputType == GeometryShaderOutput::LineStrip) {
+				for (int v = 1; v < prim->Position.size(); v++) {
+					glm::vec4 p0 = (prim->Position[v - 1] / prim->Position[v - 1].w + 1.0f) * 0.5f;
+					glm::vec4 p1 = (prim->Position[v] / prim->Position[v].w + 1.0f) * 0.5f;
+
+					if (isPointOnLine(m_pixel->RelativeCoordinate, p0, p1)) {
+						if ((p0.z + p1.z) / 2.0f < depth) { // TODO: this is obviously inaccurate, we should calculate Z that is near the RelativeCoordinate
+							depth = (p0.z + p1.z) / 2.0f;
+							m_pixel->GeometrySelectedPrimitive = p;
+							m_pixel->GeometrySelectedVertex = v;
+
+							m_pixel->FinalPosition[0] = prim->Position[v - 1];
+							m_pixel->FinalPosition[1] = prim->Position[v];
+						}
+					}
+				}
+			}
+
+			// points
+			else if (m_pixel->GeometryOutputType == GeometryShaderOutput::Points) {
+				for (int v = 0; v < prim->Position.size(); v++) {
+					glm::vec4 p0 = (prim->Position[v] / prim->Position[v].w + 1.0f) * 0.5f;
+
+					if (abs(m_pixel->RelativeCoordinate.x - p0.x) < 0.01f && abs(m_pixel->RelativeCoordinate.y - p0.y) < 0.01f) {
+						if (p0.z < depth) { // TODO: this is obviously inaccurate, we should calculate Z that is near the RelativeCoordinate
+							depth = p0.z / 2.0f;
+							m_pixel->GeometrySelectedPrimitive = p;
+							m_pixel->GeometrySelectedVertex = v;
+
+							m_pixel->FinalPosition[0] = prim->Position[v];
+						}
+					}
+				}
+			}
+		}
+	}
+
+	void DebugInformation::PrepareComputeShader(PipelineItem* pass, int x, int y, int z)
+	{
+		m_stage = ShaderStage::Compute;
+		pipe::ComputePass* data = (pipe::ComputePass*)pass->Data;
+
+		// TODO: plugins
+
+		m_resetVM();
+		m_setupVM(data->SPV);
+		m_copyUniforms(pass, nullptr);
+		m_setThreadID(m_vm, x, y, z, data->WorkX, data->WorkY, data->WorkZ);
+
+		m_numGroupsX = data->WorkX;
+		m_numGroupsY = data->WorkY;
+		m_numGroupsZ = data->WorkZ;
+
+		if (data->SPV.size() > 0) {
+			SPIRVParser parser;
+			parser.Parse(data->SPV);
+			if (parser.BarrierUsed)
+				m_setupWorkgroup();
+		}
+	}
+
 	void DebugInformation::PrepareDebugger()
 	{
 		spvm_word fnMain = spvm_state_get_result_location(m_vm, "main");
@@ -1379,6 +2265,76 @@ namespace ed {
 			m_watchValues[index] = ss.str();
 		} else
 			m_watchValues[index] = "ERROR";
+	}
+
+	void DebugInformation::ClearVectorWatchList()
+	{
+		for (auto& expr : m_vectorWatchExprs)
+			free(expr);
+
+		m_vectorWatchExprs.clear();
+		m_vectorWatchValues.clear();
+		m_vectorWatchPositions.clear();
+		m_vectorWatchColor.clear();
+	}
+	void DebugInformation::RemoveVectorWatch(size_t index)
+	{
+		free(m_vectorWatchExprs[index]);
+		m_vectorWatchExprs.erase(m_vectorWatchExprs.begin() + index);
+		m_vectorWatchValues.erase(m_vectorWatchValues.begin() + index);
+		m_vectorWatchPositions.erase(m_vectorWatchPositions.begin() + index);
+		m_vectorWatchColor.erase(m_vectorWatchColor.begin() + index);
+	}
+	void DebugInformation::AddVectorWatch(const std::string& expr, glm::vec4 color, bool execute)
+	{
+		char* data = (char*)calloc(512, sizeof(char));
+		strcpy(data, expr.c_str());
+
+		m_vectorWatchExprs.push_back(data);
+		m_vectorWatchColor.push_back(color);
+		m_vectorWatchValues.push_back("");
+		m_vectorWatchPositions.push_back(glm::vec4(0.0f));
+
+		if (execute)
+			UpdateVectorWatchValue(m_vectorWatchExprs.size() - 1);
+	}
+	void DebugInformation::UpdateVectorWatchValue(size_t index)
+	{
+		char* expr = m_vectorWatchExprs[index];
+
+		spvm_result_t resType = nullptr;
+		spvm_result_t exprVal = Immediate(std::string(expr), resType);
+
+		if (exprVal != nullptr && resType != nullptr) {
+			glm::vec4 actualValue = glm::vec4(0, 0, 0, 1);
+
+			if (resType->value_type == spvm_value_type_int || resType->value_type == spvm_value_type_float ||
+				resType->value_type == spvm_value_type_vector) {
+
+				if (resType->value_type == spvm_value_type_vector) {
+					if (m_vmImmediate->results[resType->pointer].value_type == spvm_value_type_float) {
+						for (int i = 0; i < exprVal->member_count; i++)
+							actualValue[i] = exprVal->members[i].value.f;
+					} else {
+						for (int i = 0; i < exprVal->member_count; i++)
+							actualValue[i] = exprVal->members[i].value.s;
+					}
+					if (exprVal->member_count == 3)
+						actualValue.w = 0.0f;
+				} else if (resType->value_type == spvm_value_type_float) {
+					for (int i = 0; i < exprVal->member_count; i++)
+						actualValue[i] = exprVal->members[i].value.f;
+				} else {
+					for (int i = 0; i < exprVal->member_count; i++)
+						actualValue[i] = exprVal->members[i].value.s;
+				} 
+			}
+			std::stringstream ss;
+			GetVariableValueAsString(ss, m_vmImmediate, resType, exprVal->members, exprVal->member_count, "");
+			m_vectorWatchValues[index] = ss.str();
+			m_vectorWatchPositions[index] = actualValue;
+		} else
+			m_vectorWatchValues[index] = "ERROR";
 	}
 
 	void DebugInformation::Jump(int line)
@@ -1456,17 +2412,43 @@ namespace ed {
 	void DebugInformation::ClearPixelList()
 	{
 		for (PixelInformation& px : m_pixels) {
+			// vertex shader output
 			for (int i = 0; i < px.VertexCount; i++) {
-				auto& outputs = px.VertexShaderOutput[i];
-				for (int j = 0; j < outputs.size(); j++)
-					if (outputs[j].name != nullptr)
-						free(outputs[j].name);
+				for (auto& out : px.VertexShaderOutput[i]) {
+					if (out.name) {
+						free(out.name);
+						out.name = nullptr;
+					}
+					if (out.members) {
+						spvm_member_free(out.members, out.member_count);
+						out.member_count = 0;
+						out.members = nullptr;
+					}
+				}
+			}
+
+			// geometry shader output
+			for (auto& prim : px.GeometryOutput) {
+				for (int i = 0; i < prim.Output.size(); i++) {
+					for (auto& out : prim.Output[i]) {
+						if (out.name) {
+							free(out.name);
+							out.name = nullptr;
+						}
+						if (out.members) {
+							spvm_member_free(out.members, out.member_count);
+							out.member_count = 0;
+							out.members = nullptr;
+						}
+					}
+				}
 			}
 		}
+		m_suggestions.clear();
 		m_pixels.clear();
 	}
 		
-	void DebugInformation::AddBreakpoint(const std::string& file, int line, const std::string& condition, bool enabled)
+	void DebugInformation::AddBreakpoint(const std::string& file, int line, bool useCondition, const std::string& condition, bool enabled)
 	{
 		std::vector<dbg::Breakpoint>& bkpts = m_breakpoints[file];
 
@@ -1474,7 +2456,7 @@ namespace ed {
 		for (size_t i = 0; i < bkpts.size(); i++) {
 			if (bkpts[i].Line == line) {
 				bkpts[i].Condition = condition;
-				bkpts[i].IsConditional = !condition.empty();
+				bkpts[i].IsConditional = useCondition;
 				m_breakpointStates[file][i] = enabled;
 				alreadyExists = true;
 				break;
@@ -1485,7 +2467,7 @@ namespace ed {
 			dbg::Breakpoint bkpt;
 			bkpt.Line = line;
 			bkpt.Condition = condition;
-			bkpt.IsConditional = !condition.empty();
+			bkpt.IsConditional = useCondition;
 			bkpts.push_back(bkpt);
 			m_breakpointStates[file].push_back(enabled);
 		}
@@ -1526,5 +2508,68 @@ namespace ed {
 			}
 		enabled = false;
 		return nullptr;
+	}
+	
+	void DebugInformation::SyncWorkgroup()
+	{
+		if (m_workgroup)
+			for (int i = 0; i < m_shader->local_size_x * m_shader->local_size_y * m_shader->local_size_z; i++)
+				if (m_workgroup[i])
+					spvm_state_jump_to_instruction(m_workgroup[i], m_vm->instruction_count);
+	}
+	void DebugInformation::EmitVertex(const glm::vec4& position)
+	{
+		if (m_pixel == nullptr)
+			return;
+
+		GeometryShaderPrimitive* primitive = &m_pixel->GeometryOutput.back();
+
+		primitive->Position.push_back(position);
+		primitive->Output.push_back(std::vector<struct spvm_result>());
+
+		std::vector<struct spvm_result>* out = &primitive->Output.back();
+		
+		// copy the spir-v registers
+		for (int i = 0; i < m_shader->bound; i++) {
+			spvm_result_t slot = &m_vm->results[i];
+			spvm_result_t pointer = nullptr;
+
+			if (slot->pointer)
+				pointer = &m_vm->results[m_vm->results[i].pointer];
+
+			// output variable
+			if (pointer && pointer->storage_class == SpvStorageClassOutput) {
+				int loc = -1;
+				for (int j = 0; j < slot->decoration_count; j++)
+					if (slot->decorations[j].type == SpvDecorationLocation) {
+						loc = slot->decorations[j].literal1;
+						break;
+					}
+
+				struct spvm_result copy;
+				memcpy(&copy, slot, sizeof(struct spvm_result));
+				copy.decorations = nullptr;
+				copy.decoration_count = 0;
+				copy.members = nullptr;
+
+				if (slot->name) {
+					copy.name = (spvm_string)calloc(1, strlen(slot->name) + 1);
+					strcpy(copy.name, slot->name);
+				}
+
+				// hax: store location in spvm_result::return_type -> this can be done in a better way, but im lazy right now [TODO]
+				copy.return_type = loc;
+
+				spvm_result_allocate_typed_value(&copy, m_vm->results, copy.pointer);
+				spvm_member_memcpy(copy.members, slot->members, copy.member_count);
+
+				out->push_back(copy);
+			}
+		}
+
+		m_updatedGeometryOutput = true;
+	}
+	void DebugInformation::EndPrimitive() {
+		m_pixel->GeometryOutput.push_back(GeometryShaderPrimitive());
 	}
 }

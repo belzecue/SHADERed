@@ -39,13 +39,13 @@ namespace ed {
 				ImGui::Text(PIPELINE_ITEM_NAMES[(int)m_current->Type]);
 				if (m_current->Type == PipelineItem::ItemType::Geometry) {
 					ImGui::SameLine();
-					ImGui::Text(("(" + std::string(GEOMETRY_NAMES[(int)((pipe::GeometryItem*)m_current->Data)->Type]) + ")").c_str());
+					ImGui::Text("(%s)", GEOMETRY_NAMES[(int)((pipe::GeometryItem*)m_current->Data)->Type]);
 				} else if (m_current->Type == PipelineItem::ItemType::PluginItem) {
 					ImGui::SameLine();
-					ImGui::Text(("(" + std::string(((pipe::PluginItemData*)m_current->Data)->Type) + ")").c_str());
+					ImGui::Text("(%s)", ((pipe::PluginItemData*)m_current->Data)->Type);
 				}
 			} else if (m_currentObj != nullptr) {
-				ImGui::Text(m_data->Objects.GetObjectManagerItemName(m_currentObj).c_str());
+				ImGui::Text(m_currentObj->Name.c_str());
 				if (IsRenderTexture())
 					ImGui::Text("Render Texture");
 				else if (IsTexture())
@@ -126,10 +126,11 @@ namespace ed {
 					for (item->RTCount = 0; item->RTCount < MAX_RENDER_TEXTURES; item->RTCount++) {
 						int i = item->RTCount;
 						GLuint rtID = item->RenderTextures[i];
-						std::string name = rtID == 0 ? "NULL" : (rtID == m_data->Renderer.GetTexture() ? "Window" : m_data->Objects.GetRenderTexture(rtID)->Name);
+						std::string name = rtID == 0 ? "NULL" : (rtID == m_data->Renderer.GetTexture() ? "Window" : m_data->Objects.GetByTextureID(rtID)->Name);
 
-						if (ImGui::BeginCombo(("##pui_rt_combo" + std::to_string(i)).c_str(), name.c_str())) {
-							std::vector<std::string> rts = m_data->Objects.GetObjects();
+						ImGui::PushID(i);
+						if (ImGui::BeginCombo("##pui_rt_combo", name.c_str())) {
+							std::vector<ObjectManagerItem*> rts = m_data->Objects.GetObjects();
 							bool windowAlreadyBound = false;
 							for (int k = 0; k < MAX_RENDER_TEXTURES; k++) {
 								if (item->RenderTextures[k] == 0)
@@ -141,7 +142,7 @@ namespace ed {
 								}
 
 								for (int j = 0; j < rts.size(); j++) {
-									if (!m_data->Objects.IsRenderTexture(rts[j]) || (m_data->Objects.IsRenderTexture(rts[j]) && item->RenderTextures[k] == m_data->Objects.GetTexture(rts[j]))) {
+									if (rts[j]->Type != ObjectType::RenderTexture || (rts[j]->Type == ObjectType::RenderTexture && item->RenderTextures[k] == rts[j]->Texture)) {
 										rts.erase(rts.begin() + j);
 										j--;
 									}
@@ -153,10 +154,10 @@ namespace ed {
 								if (item->RenderTextures[j] == 0)
 									break;
 
-								std::string name = item->RenderTextures[j] == m_data->Renderer.GetTexture() ? "Window" : m_data->Objects.GetRenderTexture(item->RenderTextures[j])->Name;
+								std::string name = item->RenderTextures[j] == m_data->Renderer.GetTexture() ? "Window" : m_data->Objects.GetByTextureID(item->RenderTextures[j])->Name;
 
 								for (int k = 0; k < rts.size(); k++) {
-									if (rts[k] == name) {
+									if (rts[k]->Name == name) {
 										rts.erase(rts.begin() + k);
 										k--;
 									}
@@ -184,9 +185,9 @@ namespace ed {
 
 							// users RTs
 							for (int j = 0; j < rts.size(); j++)
-								if (m_data->Objects.IsRenderTexture(rts[j])) {
-									GLuint texID = m_data->Objects.GetTexture(rts[j]);
-									if (ImGui::Selectable(rts[j].c_str(), rtID == texID)) {
+								if (rts[j]->Type == ObjectType::RenderTexture) {
+									GLuint texID = rts[j]->Texture;
+									if (ImGui::Selectable(rts[j]->Name.c_str(), rtID == texID)) {
 										m_data->Parser.ModifyProject();
 										item->RenderTextures[i] = texID;
 									}
@@ -194,6 +195,7 @@ namespace ed {
 
 							ImGui::EndCombo();
 						}
+						ImGui::PopID();
 
 						if (item->RenderTextures[i] == 0)
 							break;
@@ -426,8 +428,15 @@ namespace ed {
 					ImGui::NextColumn();
 
 					ImGui::PushItemWidth(-1);
-					if (ImGui::Combo("##pui_geotopology", reinterpret_cast<int*>(&item->Topology), TOPOLOGY_ITEM_NAMES, HARRAYSIZE(TOPOLOGY_ITEM_NAMES)))
+					int selectedTopology = 0;
+					for (selectedTopology = 0; selectedTopology < HARRAYSIZE(TOPOLOGY_ITEM_VALUES); selectedTopology++) {
+						if (TOPOLOGY_ITEM_VALUES[selectedTopology] == item->Topology) 
+							break;
+					}
+					if (ImGui::Combo("##pui_geotopology", reinterpret_cast<int*>(&selectedTopology), TOPOLOGY_ITEM_NAMES, HARRAYSIZE(TOPOLOGY_ITEM_NAMES))) {
+						item->Topology = TOPOLOGY_ITEM_VALUES[selectedTopology];
 						m_data->Parser.ModifyProject();
+					}
 					ImGui::PopItemWidth();
 					ImGui::NextColumn();
 					ImGui::Separator();
@@ -456,10 +465,9 @@ namespace ed {
 					ImGui::Text("Instance input buffer:");
 					ImGui::NextColumn();
 
-					const auto& bufList = m_data->Objects.GetItemDataList();
-					auto& bufNames = m_data->Objects.GetObjects();
+					const auto& bufList = m_data->Objects.GetObjects();
 					ImGui::PushItemWidth(-1);
-					if (ImGui::BeginCombo("##pui_geo_instancebuf", ((item->InstanceBuffer == nullptr) ? "NULL" : (m_data->Objects.GetBufferNameByID(((BufferObject*)item->InstanceBuffer)->ID).c_str())))) {
+					if (ImGui::BeginCombo("##pui_geo_instancebuf", ((item->InstanceBuffer == nullptr) ? "NULL" : (m_data->Objects.GetByBufferID(((BufferObject*)item->InstanceBuffer)->ID)->Name.c_str())))) {
 						// null element
 						if (ImGui::Selectable("NULL", item->InstanceBuffer == nullptr)) {
 							item->InstanceBuffer = nullptr;
@@ -473,12 +481,12 @@ namespace ed {
 						}
 
 						for (int i = 0; i < bufList.size(); i++) {
-							if (bufList[i]->Buffer == nullptr)
+							if (bufList[i]->Type != ObjectType::Buffer)
 								continue;
 
 							ed::BufferObject* buf = bufList[i]->Buffer;
 
-							if (ImGui::Selectable(bufNames[i].c_str(), buf == item->InstanceBuffer)) {
+							if (ImGui::Selectable(bufList[i]->Name.c_str(), buf == item->InstanceBuffer)) {
 								item->InstanceBuffer = buf;
 								auto fmtList = m_data->Objects.ParseBufferFormat(buf->ViewFormat);
 
@@ -880,10 +888,9 @@ namespace ed {
 					ImGui::Text("Instance input buffer:");
 					ImGui::NextColumn();
 
-					const auto& bufList = m_data->Objects.GetItemDataList();
-					auto& bufNames = m_data->Objects.GetObjects();
+					const auto& bufList = m_data->Objects.GetObjects();
 					ImGui::PushItemWidth(-1);
-					if (ImGui::BeginCombo("##pui_mdl_instancebuf", ((item->InstanceBuffer == nullptr) ? "NULL" : (m_data->Objects.GetBufferNameByID(((BufferObject*)item->InstanceBuffer)->ID).c_str())))) {
+					if (ImGui::BeginCombo("##pui_mdl_instancebuf", ((item->InstanceBuffer == nullptr) ? "NULL" : (m_data->Objects.GetByBufferID(((BufferObject*)item->InstanceBuffer)->ID)->Name.c_str())))) {
 						// null element
 						if (ImGui::Selectable("NULL", item->InstanceBuffer == nullptr)) {
 							item->InstanceBuffer = nullptr;
@@ -903,7 +910,7 @@ namespace ed {
 
 							BufferObject* buf = bufList[i]->Buffer;
 
-							if (ImGui::Selectable(bufNames[i].c_str(), buf == item->InstanceBuffer)) {
+							if (ImGui::Selectable(bufList[i]->Name.c_str(), buf == item->InstanceBuffer)) {
 								item->InstanceBuffer = buf;
 								auto fmtList = m_data->Objects.ParseBufferFormat(buf->ViewFormat);
 
@@ -932,10 +939,9 @@ namespace ed {
 					ImGui::Text("Buffer:");
 					ImGui::NextColumn();
 
-					const auto& bufList = m_data->Objects.GetItemDataList();
-					auto& bufNames = m_data->Objects.GetObjects();
+					auto& bufList = m_data->Objects.GetObjects();
 					ImGui::PushItemWidth(-1);
-					if (ImGui::BeginCombo("##pui_vb_buffer", ((item->Buffer == nullptr) ? "NULL" : (m_data->Objects.GetBufferNameByID(((BufferObject*)item->Buffer)->ID).c_str())))) {
+					if (ImGui::BeginCombo("##pui_vb_buffer", ((item->Buffer == nullptr) ? "NULL" : (m_data->Objects.GetByBufferID(((BufferObject*)item->Buffer)->ID)->Name.c_str())))) {
 						// null element
 						if (ImGui::Selectable("NULL", item->Buffer == nullptr)) {
 							item->Buffer = nullptr;
@@ -947,12 +953,12 @@ namespace ed {
 						}
 
 						for (int i = 0; i < bufList.size(); i++) {
-							if (bufList[i]->Buffer == nullptr)
+							if (bufList[i]->Type != ObjectType::Buffer)
 								continue;
 
 							ed::BufferObject* buf = bufList[i]->Buffer;
 
-							if (ImGui::Selectable(bufNames[i].c_str(), buf == item->Buffer)) {
+							if (ImGui::Selectable(bufList[i]->Name.c_str(), buf == item->Buffer)) {
 								item->Buffer = buf;
 								auto fmtList = m_data->Objects.ParseBufferFormat(buf->ViewFormat);
 
@@ -1014,8 +1020,15 @@ namespace ed {
 					ImGui::NextColumn();
 
 					ImGui::PushItemWidth(-1);
-					if (ImGui::Combo("##pui_geotopology", reinterpret_cast<int*>(&item->Topology), TOPOLOGY_ITEM_NAMES, HARRAYSIZE(TOPOLOGY_ITEM_NAMES)))
+					int selectedTopology = 0;
+					for (selectedTopology = 0; selectedTopology < HARRAYSIZE(TOPOLOGY_ITEM_VALUES); selectedTopology++) {
+						if (TOPOLOGY_ITEM_VALUES[selectedTopology] == item->Topology)
+							break;
+					}
+					if (ImGui::Combo("##pui_geotopology", reinterpret_cast<int*>(&selectedTopology), TOPOLOGY_ITEM_NAMES, HARRAYSIZE(TOPOLOGY_ITEM_NAMES))) {
+						item->Topology = TOPOLOGY_ITEM_VALUES[selectedTopology];
 						m_data->Parser.ModifyProject();
+					}
 					ImGui::PopItemWidth();
 				} 
 			} else if (IsRenderTexture()) {
@@ -1033,7 +1046,7 @@ namespace ed {
 					if (m_currentRT->FixedSize.y <= 0)
 						m_currentRT->FixedSize.y = 10;
 
-					m_data->Objects.ResizeRenderTexture(std::string(m_itemName), m_currentRT->FixedSize);
+					m_data->Objects.ResizeRenderTexture(m_currentObj, m_currentRT->FixedSize);
 					m_data->Parser.ModifyProject();
 				}
 				ImGui::PopItemWidth();
@@ -1055,7 +1068,7 @@ namespace ed {
 					glm::ivec2 newSize(m_currentRT->RatioSize.x * m_data->Renderer.GetLastRenderSize().x,
 						m_currentRT->RatioSize.y * m_data->Renderer.GetLastRenderSize().y);
 
-					m_data->Objects.ResizeRenderTexture(std::string(m_itemName), newSize);
+					m_data->Objects.ResizeRenderTexture(m_currentObj, newSize);
 					m_data->Parser.ModifyProject();
 				}
 				ImGui::PopItemWidth();
@@ -1073,7 +1086,7 @@ namespace ed {
 							m_currentRT->Format = FORMAT_VALUES[i];
 							glm::ivec2 wsize(m_data->Renderer.GetLastRenderSize().x, m_data->Renderer.GetLastRenderSize().y);
 
-							m_data->Objects.ResizeRenderTexture(std::string(m_itemName), m_currentRT->CalculateSize(wsize.x, wsize.y));
+							m_data->Objects.ResizeRenderTexture(m_currentObj, m_currentRT->CalculateSize(wsize.x, wsize.y));
 							m_data->Parser.ModifyProject();
 						}
 					}
@@ -1125,7 +1138,7 @@ namespace ed {
 					if (m_currentImg->Size.y <= 0)
 						m_currentImg->Size.y = 1;
 
-					m_data->Objects.ResizeImage(std::string(m_itemName), m_currentImg->Size);
+					m_data->Objects.ResizeImage(m_currentObj, m_currentImg->Size);
 				}
 				ImGui::PopItemWidth();
 				ImGui::NextColumn();
@@ -1142,7 +1155,7 @@ namespace ed {
 							m_currentImg->Format = FORMAT_VALUES[i];
 							glm::ivec2 wsize(m_data->Renderer.GetLastRenderSize().x, m_data->Renderer.GetLastRenderSize().y);
 
-							m_data->Objects.ResizeImage(std::string(m_itemName), m_currentImg->Size);
+							m_data->Objects.ResizeImage(m_currentObj, m_currentImg->Size);
 						}
 					}
 
@@ -1161,12 +1174,11 @@ namespace ed {
 						m_currentImg->DataPath[0] = 0;
 
 					
-					const std::vector<std::string>& texNames = m_data->Objects.GetObjects();
-					const std::vector<ObjectManagerItem*>& texData = m_data->Objects.GetItemDataList();
+					const std::vector<ObjectManagerItem*>& texData = m_data->Objects.GetObjects();
 
-					for (int i = 0; i < texNames.size(); i++)
-						if (texData[i]->IsTexture && !texData[i]->IsKeyboardTexture && ImGui::Selectable(texNames[i].c_str(), texNames[i] == m_currentImg->DataPath))
-							strcpy(m_currentImg->DataPath, texNames[i].c_str());
+					for (int i = 0; i < texData.size(); i++)
+						if (texData[i]->Type == ObjectType::Texture && ImGui::Selectable(texData[i]->Name.c_str(), texData[i]->Name == m_currentImg->DataPath))
+							strcpy(m_currentImg->DataPath, texData[i]->Name.c_str());
 
 					ImGui::EndCombo();
 				}
@@ -1179,22 +1191,21 @@ namespace ed {
 						GLuint tex = 0;
 						glm::ivec2 texSize(0);
 						if (m_currentImg->DataPath[0] != 0) {
-							tex = m_data->Objects.GetTexture(m_currentImg->DataPath);
-							texSize = m_data->Objects.GetTextureSize(m_currentImg->DataPath);
+							ObjectManagerItem* texPtr = m_data->Objects.Get(m_currentImg->DataPath);
+							tex = texPtr->Texture;
+							texSize = texPtr->TextureSize;
 						}
 
 						m_data->Objects.UploadDataToImage(m_currentImg, tex, texSize);
 					}
 				}
 			} else if (IsTexture()) {
-				std::string path = m_data->Objects.GetObjectManagerItemName(m_currentObj);
-
 				/* texture path */
 				ImGui::Text("Path:");
 				ImGui::NextColumn();
 				ImGui::PushItemWidth(BUTTON_SPACE_LEFT);
 				ImGui::PushItemFlag(ImGuiItemFlags_Disabled, true);
-				ImGui::InputText("##pui_texpath", const_cast<char*>(path.c_str()), SHADERED_MAX_PATH); // not like it's going to be modified, amirite
+				ImGui::InputText("##pui_texpath", const_cast<char*>(m_currentObj->Name.c_str()), SHADERED_MAX_PATH); // not like it's going to be modified, amirite
 				ImGui::PopItemFlag();
 				ImGui::PopItemWidth();
 				ImGui::SameLine();
@@ -1275,7 +1286,7 @@ namespace ed {
 					if (m_currentImg3D->Size.z <= 0)
 						m_currentImg3D->Size.z = 1;
 
-					m_data->Objects.ResizeImage3D(std::string(m_itemName), m_currentImg3D->Size);
+					m_data->Objects.ResizeImage3D(m_currentObj, m_currentImg3D->Size);
 				}
 				ImGui::PopItemWidth();
 				ImGui::NextColumn();
@@ -1292,7 +1303,7 @@ namespace ed {
 							m_currentImg3D->Format = FORMAT_VALUES[i];
 							glm::ivec2 wsize(m_data->Renderer.GetLastRenderSize().x, m_data->Renderer.GetLastRenderSize().y);
 
-							m_data->Objects.ResizeImage3D(std::string(m_itemName), m_currentImg3D->Size);
+							m_data->Objects.ResizeImage3D(m_currentObj, m_currentImg3D->Size);
 						}
 					}
 
@@ -1360,15 +1371,21 @@ namespace ed {
 
 		m_current = item;
 		m_currentObj = nullptr;
+
+		if (item != nullptr)
+			Visible = true;
 	}
-	void PropertyUI::Open(const std::string& name, ObjectManagerItem* obj)
+	void PropertyUI::Open(ObjectManagerItem* obj)
 	{
 		Logger::Get().Log("Opening an ObjectManager item in the PropertyUI");
 
 		memset(m_itemName, 0, PIPELINE_ITEM_NAME_LENGTH);
-		memcpy(m_itemName, name.c_str(), name.size());
+		memcpy(m_itemName, obj->Name.c_str(), obj->Name.size());
 
 		m_current = nullptr;
 		m_currentObj = obj;
+
+		if (obj != nullptr)
+			Visible = true;
 	}
 }

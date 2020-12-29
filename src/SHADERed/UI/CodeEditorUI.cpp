@@ -6,6 +6,7 @@
 #include <SHADERed/Objects/ThemeContainer.h>
 #include <SHADERed/UI/CodeEditorUI.h>
 #include <SHADERed/UI/UIHelper.h>
+#include <ImGuiFileDialog/ImGuiFileDialog.h>
 
 #include <imgui/imgui.h>
 #include <imgui/imgui_internal.h>
@@ -151,6 +152,20 @@ namespace ed {
 		} else
 			saveFunc(true);
 	}
+	void CodeEditorUI::m_saveAsSPV(int id)
+	{
+		if (id < m_items.size()) {
+			m_editorSaveRequestID = id;
+			igfd::ImGuiFileDialog::Instance()->OpenModal("SaveSPVBinaryDlg", "Save SPIR-V binary", "SPIR-V binary (*.spv){.spv},.*", ".");
+		}
+	}
+	void CodeEditorUI::m_saveAsGLSL(int id)
+	{
+		if (id < m_items.size()) {
+			m_editorSaveRequestID = id;
+			igfd::ImGuiFileDialog::Instance()->OpenModal("SaveGLSLDlg", "Save as GLSL", "GLSL source (*.glsl){.glsl},.*", ".");
+		}
+	}
 	void CodeEditorUI::m_compile(int id)
 	{
 		if (id >= m_editor.size())
@@ -219,6 +234,8 @@ namespace ed {
 					if (ImGui::BeginMenuBar()) {
 						if (ImGui::BeginMenu("File")) {
 							if (ImGui::MenuItem("Save", KeyboardShortcuts::Instance().GetString("CodeUI.Save").c_str())) m_save(i);
+							if (ImGui::MenuItem("Save SPIR-V binary")) m_saveAsSPV(i);
+							if (ImGui::MenuItem("Save as GLSL")) m_saveAsGLSL(i);
 							ImGui::EndMenu();
 						}
 						if (ImGui::BeginMenu("Code")) {
@@ -359,6 +376,93 @@ namespace ed {
 			ImGui::EndPopup();
 		}
 
+		// save spir-v binary dialog
+		if (igfd::ImGuiFileDialog::Instance()->FileDialog("SaveSPVBinaryDlg")) {
+			if (igfd::ImGuiFileDialog::Instance()->IsOk) {
+				std::string filePathName = igfd::ImGuiFileDialog::Instance()->GetFilepathName();
+
+				std::vector<unsigned int> spv;
+
+				PipelineItem* item = m_items[m_editorSaveRequestID];
+				ShaderStage stage = m_shaderStage[m_editorSaveRequestID];
+
+				if (item->Type == PipelineItem::ItemType::ShaderPass) {
+					pipe::ShaderPass* pass = (pipe::ShaderPass*)item->Data;
+					if (stage == ShaderStage::Pixel)
+						spv = pass->PSSPV;
+					else if (stage == ShaderStage::Vertex)
+						spv = pass->VSSPV;
+					else if (stage == ShaderStage::Geometry)
+						spv = pass->GSSPV;
+				} else if (item->Type == PipelineItem::ItemType::ComputePass) {
+					pipe::ComputePass* pass = (pipe::ComputePass*)item->Data;
+					if (stage == ShaderStage::Pixel)
+						spv = pass->SPV;
+				} else if (item->Type == PipelineItem::ItemType::PluginItem) {
+					pipe::PluginItemData* data = (pipe::PluginItemData*)item->Data;
+					unsigned int spvSize = data->Owner->PipelineItem_GetSPIRVSize(data->Type, data->PluginData, (plugin::ShaderStage)stage);
+					unsigned int* spvPtr = data->Owner->PipelineItem_GetSPIRV(data->Type, data->PluginData, (plugin::ShaderStage)stage);
+
+					if (spvPtr != nullptr && spvSize != 0)
+						spv = std::vector<unsigned int>(spvPtr, spvPtr + spvSize);
+				}
+
+				std::ofstream spvOut(filePathName, std::ios::out | std::ios::binary);
+				spvOut.write((char*)spv.data(), spv.size() * sizeof(unsigned int));
+				spvOut.close();
+			}
+			igfd::ImGuiFileDialog::Instance()->CloseDialog("SaveSPVBinaryDlg");
+		}
+
+		// save glsl dialog
+		if (igfd::ImGuiFileDialog::Instance()->FileDialog("SaveGLSLDlg")) {
+			if (igfd::ImGuiFileDialog::Instance()->IsOk) {
+				std::string filePathName = igfd::ImGuiFileDialog::Instance()->GetFilepathName();
+
+				std::vector<unsigned int> spv;
+				bool gsUsed = false;
+
+				PipelineItem* item = m_items[m_editorSaveRequestID];
+				ShaderStage stage = m_shaderStage[m_editorSaveRequestID];
+
+				ed::ShaderLanguage lang = ed::ShaderLanguage::Plugin;
+				if (m_editor[m_editorSaveRequestID]->GetLanguageDefinition().mName == "HLSL")
+					lang = ed::ShaderLanguage::HLSL;
+				else if (m_editor[m_editorSaveRequestID]->GetLanguageDefinition().mName == "GLSL")
+					lang = ed::ShaderLanguage::GLSL;
+
+
+				if (item->Type == PipelineItem::ItemType::ShaderPass) {
+					pipe::ShaderPass* pass = (pipe::ShaderPass*)item->Data;
+					if (stage == ShaderStage::Pixel)
+						spv = pass->PSSPV;
+					else if (stage == ShaderStage::Vertex)
+						spv = pass->VSSPV;
+					else if (stage == ShaderStage::Geometry)
+						spv = pass->GSSPV;
+					gsUsed = pass->GSUsed;
+				} else if (item->Type == PipelineItem::ItemType::ComputePass) {
+					pipe::ComputePass* pass = (pipe::ComputePass*)item->Data;
+					if (stage == ShaderStage::Pixel)
+						spv = pass->SPV;
+				} else if (item->Type == PipelineItem::ItemType::PluginItem) {
+					pipe::PluginItemData* data = (pipe::PluginItemData*)item->Data;
+					unsigned int spvSize = data->Owner->PipelineItem_GetSPIRVSize(data->Type, data->PluginData, (plugin::ShaderStage)stage);
+					unsigned int* spvPtr = data->Owner->PipelineItem_GetSPIRV(data->Type, data->PluginData, (plugin::ShaderStage)stage);
+
+					if (spvPtr != nullptr && spvSize != 0)
+						spv = std::vector<unsigned int>(spvPtr, spvPtr + spvSize);
+				}
+
+				std::string glslSource = ed::ShaderCompiler::ConvertToGLSL(spv, lang, stage, gsUsed, nullptr);
+
+				std::ofstream spvOut(filePathName, std::ios::out | std::ios::binary);
+				spvOut.write(glslSource.c_str(), glslSource.size());
+				spvOut.close();
+			}
+			igfd::ImGuiFileDialog::Instance()->CloseDialog("SaveGLSLDlg");
+		}
+
 		// delete closed editors
 		if (m_savePopupOpen == -1) {
 			for (int i = 0; i < m_editorOpen.size(); i++) {
@@ -388,9 +492,9 @@ namespace ed {
 
 	void CodeEditorUI::LoadSnippets()
 	{
-		std::string snippetsFileLoc = "data/snippets.xml";
-		if (!ed::Settings::Instance().LinuxHomeDirectory.empty())
-			snippetsFileLoc = ed::Settings::Instance().LinuxHomeDirectory + "data/snippets.xml";
+		Logger::Get().Log("Loading code snippets");
+
+		std::string snippetsFileLoc = Settings::Instance().ConvertPath("data/snippets.xml");
 
 		pugi::xml_document doc;
 		pugi::xml_parse_result result = doc.load_file(snippetsFileLoc.c_str());
@@ -425,9 +529,7 @@ namespace ed {
 			snippetNode.append_child("code").text().set(snippet.Code.c_str());
 		}
 
-		std::string snippetsFileLoc = "data/snippets.xml";
-		if (!ed::Settings::Instance().LinuxHomeDirectory.empty())
-			snippetsFileLoc = ed::Settings::Instance().LinuxHomeDirectory + "data/snippets.xml";
+		std::string snippetsFileLoc = Settings::Instance().ConvertPath("data/snippets.xml");
 		doc.save_file(snippetsFileLoc.c_str());
 	}
 	void CodeEditorUI::AddSnippet(const std::string& lang, const std::string& display, const std::string& search, const std::string& code)
@@ -563,6 +665,8 @@ namespace ed {
 			editor->SetCompleteBraces(Settings::Instance().Editor.AutoBraceCompletion);
 			editor->SetHorizontalScroll(Settings::Instance().Editor.HorizontalScroll);
 			editor->SetSmartPredictions(Settings::Instance().Editor.SmartPredictions);
+			editor->SetFunctionTooltips(Settings::Instance().Editor.FunctionTooltips);
+			editor->SetFunctionDeclarationTooltip(Settings::Instance().Editor.FunctionDeclarationTooltips);
 			editor->SetUIScale(Settings::Instance().TempScale);
 			editor->SetUIFontSize(Settings::Instance().General.FontSize);
 			editor->SetEditorFontSize(Settings::Instance().Editor.FontSize);
@@ -608,7 +712,7 @@ namespace ed {
 						for (const auto& arg : func.second.Arguments) {
 							bool argExists = false;
 							for (const auto& editorArg : editor.second.Arguments) {
-								if (arg == editorArg) {
+								if (arg.Name == editorArg.Name) {
 									argExists = true;
 									break;
 								}
@@ -620,7 +724,7 @@ namespace ed {
 						for (const auto& loc : func.second.Locals) {
 							bool locExists = false;
 							for (const auto& editorLoc : editor.second.Locals) {
-								if (loc == editorLoc) {
+								if (loc.Name == editorLoc.Name) {
 									locExists = true;
 									break;
 								}
@@ -638,7 +742,7 @@ namespace ed {
 			for (const auto& type : spv.UserTypes) {
 				bool typeExists = false;
 				for (const auto& editor : tEdit->GetAutocompleteUserTypes()) {
-					if (type.first == editor) {
+					if (type.first == editor.first) {
 						typeExists = true;
 						break;
 					}
@@ -649,7 +753,7 @@ namespace ed {
 			for (const auto& unif : spv.Uniforms) {
 				bool unifExists = false;
 				for (const auto& editor : tEdit->GetAutocompleteUniforms()) {
-					if (unif.Name == editor) {
+					if (unif.Name == editor.Name) {
 						unifExists = true;
 						break;
 					}
@@ -660,7 +764,7 @@ namespace ed {
 			for (const auto& glob : spv.Globals) {
 				bool globExists = false;
 				for (const auto& editor : tEdit->GetAutocompleteGlobals()) {
-					if (glob == editor) {
+					if (glob.Name == editor.Name) {
 						globExists = true;
 						break;
 					}
@@ -674,14 +778,10 @@ namespace ed {
 		tEdit->ClearAutocompleteEntries();
 
 		// spirv parser
-		for (const auto& pair : spv.Functions)
-			tEdit->AddAutocompleteFunction(pair.first, pair.second.LineStart, pair.second.LineEnd, pair.second.Arguments, pair.second.Locals);
-		for (const auto& pair : spv.UserTypes)
-			tEdit->AddAutocompleteUserType(pair.first);
-		for (const auto& uni : spv.Uniforms)
-			tEdit->AddAutocompleteUniform(uni.Name);
-		for (const auto& glob : spv.Globals)
-			tEdit->AddAutocompleteGlobal(glob);
+		tEdit->SetAutocompleteFunctions(spv.Functions);
+		tEdit->SetAutocompleteUserTypes(spv.UserTypes);
+		tEdit->SetAutocompleteUniforms(spv.Uniforms);
+		tEdit->SetAutocompleteGlobals(spv.Globals);
 
 		// plugins
 		plugin::ShaderStage stage = plugin::ShaderStage::Vertex;
@@ -806,6 +906,7 @@ namespace ed {
 			editor->SetHorizontalScroll(Settings::Instance().Editor.HorizontalScroll);
 			editor->SetSmartPredictions(Settings::Instance().Editor.SmartPredictions);
 			editor->SetFunctionTooltips(Settings::Instance().Editor.FunctionTooltips);
+			editor->SetFunctionDeclarationTooltip(Settings::Instance().Editor.FunctionDeclarationTooltips);
 			editor->SetPath(shaderPath);
 			editor->SetUIScale(Settings::Instance().DPIScale);
 			editor->SetUIFontSize(Settings::Instance().General.FontSize);
@@ -918,6 +1019,7 @@ namespace ed {
 			editor->SetHorizontalScroll(Settings::Instance().Editor.HorizontalScroll);
 			editor->SetSmartPredictions(Settings::Instance().Editor.SmartPredictions);
 			editor->SetFunctionTooltips(Settings::Instance().Editor.FunctionTooltips);
+			editor->SetFunctionDeclarationTooltip(Settings::Instance().Editor.FunctionDeclarationTooltips);
 			editor->SetPath(filepath);
 			editor->SetUIScale(Settings::Instance().DPIScale);
 			editor->SetUIFontSize(Settings::Instance().General.FontSize);
@@ -1052,13 +1154,13 @@ namespace ed {
 		const std::vector<bool>& states = m_data->Debugger.GetBreakpointStateList(path);
 
 		for (size_t i = 0; i < bkpts.size(); i++)
-			editor->AddBreakpoint(bkpts[i].Line, bkpts[i].IsConditional ? bkpts[i].Condition : "", states[i]);
+			editor->AddBreakpoint(bkpts[i].Line, bkpts[i].IsConditional, bkpts[i].Condition, states[i]);
 
 		editor->OnBreakpointRemove = [&](TextEditor* ed, int line) {
 			m_data->Debugger.RemoveBreakpoint(ed->GetPath(), line);
 		};
-		editor->OnBreakpointUpdate = [&](TextEditor* ed, int line, const std::string& cond, bool enabled) {
-			m_data->Debugger.AddBreakpoint(ed->GetPath(), line, cond, enabled);
+		editor->OnBreakpointUpdate = [&](TextEditor* ed, int line, bool useCond, const std::string& cond, bool enabled) {
+			m_data->Debugger.AddBreakpoint(ed->GetPath(), line, useCond, cond, enabled);
 		};
 	}
 

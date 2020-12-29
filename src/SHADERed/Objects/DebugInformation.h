@@ -1,5 +1,6 @@
 #pragma once
 #include <SHADERed/Objects/Debug/PixelInformation.h>
+#include <SHADERed/Objects/Debug/DebuggerSuggestion.h>
 #include <SHADERed/Objects/Debug/Breakpoint.h>
 #include <SHADERed/Objects/ObjectManager.h>
 #include <SHADERed/Objects/RenderEngine.h>
@@ -37,13 +38,19 @@ namespace ed {
 		void GetVariableValueAsString(std::stringstream& outString, spvm_state_t state, spvm_result_t type, spvm_member_t mems, spvm_word mem_count, const std::string& prefix);
 
 		void PrepareVertexShader(PipelineItem* pass, PipelineItem* item, PixelInformation* px = nullptr);
-		void SetVertexShaderInput(PipelineItem* pass, eng::Model::Mesh::Vertex vertex, int vertexID, int instanceID, ed::BufferObject* instanceBuffer = nullptr);
+		void SetVertexShaderInput(PixelInformation& pixel, int vertexIndex);
 		glm::vec4 ExecuteVertexShader();
 		void CopyVertexShaderOutput(PixelInformation& px, int vertexIndex);
 
 		void PreparePixelShader(PipelineItem* pass, PipelineItem* item, PixelInformation* px = nullptr);
 		void SetPixelShaderInput(PixelInformation& pixel);
 		glm::vec4 ExecutePixelShader(int x, int y, int loc = 0);
+
+		void PrepareGeometryShader(PipelineItem* pass, PipelineItem* item, PixelInformation* px = nullptr);
+		void SetGeometryShaderInput(PixelInformation& pixel);
+		void ExecuteGeometryShader();
+
+		void PrepareComputeShader(PipelineItem* pass, int x, int y, int z);
 
 		spvm_result_t Immediate(const std::string& entry, spvm_result_t& outType);
 
@@ -59,6 +66,10 @@ namespace ed {
 		void ClearPixelList();
 		inline void AddPixel(const PixelInformation& px) { m_pixels.push_back(px); }
 		inline std::vector<PixelInformation>& GetPixelList() { return m_pixels; }
+		inline PixelInformation* GetPixel() { return m_pixel; }
+
+		inline void AddSuggestion(const DebuggerSuggestion& px) { m_suggestions.push_back(px); }
+		inline std::vector<DebuggerSuggestion>& GetSuggestionList() { return m_suggestions; }
 
 		inline const std::string& GetWatchValue(size_t index) { return m_watchValues[index]; }
 		inline std::vector<char*>& GetWatchList() { return m_watchExprs; }
@@ -67,7 +78,16 @@ namespace ed {
 		void AddWatch(const std::string& expr, bool execute = true);
 		void UpdateWatchValue(size_t index);
 
-		void AddBreakpoint(const std::string& file, int line, const std::string& condition, bool enabled = true);
+		inline const std::string& GetVectorWatchValue(size_t index) { return m_vectorWatchValues[index]; }
+		inline std::vector<char*>& GetVectorWatchList() { return m_vectorWatchExprs; }
+		inline std::vector<glm::vec4>& GetVectorWatchColors() { return m_vectorWatchColor; }
+		inline std::vector<glm::vec4>& GetVectorWatchPositions() { return m_vectorWatchPositions; }
+		void ClearVectorWatchList();
+		void RemoveVectorWatch(size_t index);
+		void AddVectorWatch(const std::string& expr, glm::vec4 color, bool execute = true);
+		void UpdateVectorWatchValue(size_t index);
+
+		void AddBreakpoint(const std::string& file, int line, bool useCondition, const std::string& condition, bool enabled = true);
 		void RemoveBreakpoint(const std::string& file, int line);
 		void SetBreakpointEnabled(const std::string& file, int line, bool enable);
 		dbg::Breakpoint* GetBreakpoint(const std::string& file, int line, bool& enabled);
@@ -85,10 +105,27 @@ namespace ed {
 		inline bool IsDebugging() { return m_isDebugging; }
 		inline ShaderStage GetStage() { return m_stage; }
 
+		// compute shared stuff
+		void SyncWorkgroup();
+		struct SharedMemoryEntry {
+			spvm_result Data;
+			spvm_result_t Destination;
+			spvm_word Slot;
+		};
+		std::vector<SharedMemoryEntry> SharedMemory;
+
+		// geometry shader stuff
+		void EmitVertex(const glm::vec4& position);
+		void EndPrimitive();
+		inline bool IsGeometryUpdated() { return m_updatedGeometryOutput; }
+		inline void ResetGeometryUpdated() { m_updatedGeometryOutput = false; }
+
 	private:
 		ObjectManager* m_objs;
 		RenderEngine* m_renderer;
 		MessageStack* m_msgs;
+
+		bool m_updatedGeometryOutput;
 
 #ifdef BUILD_IMMEDIATE_MODE
 		ExpressionCompiler m_compiler;
@@ -107,10 +144,31 @@ namespace ed {
 
 		std::vector<spvm_image_t> m_images; // TODO: clear these + smart cache
 
-
 		spvm_context_t m_vmContext;
 		spvm_ext_opcode_func* m_vmGLSL;
 
+		// keep track of replace results
+		struct OriginalValue {
+			OriginalValue(spvm_state_t state, int slot, spvm_word member_count, spvm_member_t members)
+			{
+				State = state;
+				Slot = slot;
+				MemberCount = member_count;
+				Members = members;
+			}
+			spvm_state_t State;
+			int Slot;
+			spvm_word MemberCount;
+			spvm_member_t Members;
+		};
+
+		spvm_state_t* m_workgroup;
+		int m_localThreadIndex;
+		int m_threadX, m_threadY, m_threadZ, m_numGroupsX, m_numGroupsY, m_numGroupsZ;
+		void m_setupWorkgroup();
+		std::vector<OriginalValue> m_originalValues;
+		void m_setThreadID(spvm_state_t state, int x, int y, int z, int numGroupsX, int numGroupsY, int numGroupsZ);
+		
 		void m_copyUniforms(PipelineItem* pass, PipelineItem* item, PixelInformation* px = nullptr);
 		void m_setupVM(std::vector<unsigned int>& spv);
 		void m_resetVM();
@@ -128,10 +186,16 @@ namespace ed {
 
 		std::vector<int> m_funcStackLines;
 
+		std::vector<DebuggerSuggestion> m_suggestions;
 		std::vector<PixelInformation> m_pixels;
 
 		std::vector<char*> m_watchExprs;
 		std::vector<std::string> m_watchValues;
+
+		std::vector<char*> m_vectorWatchExprs;
+		std::vector<std::string> m_vectorWatchValues;
+		std::vector<glm::vec4> m_vectorWatchColor;
+		std::vector<glm::vec4> m_vectorWatchPositions;
 
 		std::unordered_map<std::string, std::vector<dbg::Breakpoint>> m_breakpoints;
 		std::unordered_map<std::string, std::vector<bool>> m_breakpointStates;

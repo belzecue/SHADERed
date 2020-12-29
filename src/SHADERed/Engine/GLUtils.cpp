@@ -154,11 +154,18 @@ namespace ed {
 			glBindBuffer(GL_ARRAY_BUFFER, geoVBO);
 			glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, geoEBO);
 
+			GLuint layOffset = 0;
 			for (const auto& layitem : ilayout) {
+				GLint size = InputLayoutItem::GetValueSize(layitem.Value);
+				GLint offset = InputLayoutItem::GetValueOffset(layitem.Value) * sizeof(GLfloat);
+				if (layitem.Value >= InputLayoutValue::BufferFloat && layitem.Value <= InputLayoutValue::BufferInt4)
+					offset = layOffset;
+
 				// vertex positions
-				glVertexAttribPointer(fmtIndex, InputLayoutItem::GetValueSize(layitem.Value), GL_FLOAT, GL_FALSE, 18 * sizeof(float), (void*)(InputLayoutItem::GetValueOffset(layitem.Value) * sizeof(GLfloat)));
+				glVertexAttribPointer(fmtIndex, size, GL_FLOAT, GL_FALSE, 18 * sizeof(float), (void*)offset);
 				glEnableVertexAttribArray(fmtIndex);
 				fmtIndex++;
+				layOffset += size;
 			}
 
 			// user defined
@@ -217,6 +224,12 @@ namespace ed {
 		void GetVertexBufferBounds(ObjectManager* objs, pipe::VertexBuffer* model, glm::vec3& minPosItem, glm::vec3& maxPosItem)
 		{
 			BufferObject* buffer = (BufferObject*)model->Buffer;
+
+			if (buffer == nullptr) {
+				minPosItem = glm::vec3(0.0f);
+				maxPosItem = glm::vec3(0.0f);
+				return;
+			}
 
 			std::vector<ShaderVariable::ValueType> tData = objs->ParseBufferFormat(buffer->ViewFormat);
 

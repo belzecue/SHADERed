@@ -56,11 +56,12 @@ namespace ed {
 		Editor.InsertSpaces = false;
 		Editor.TabSize = 4;
 		Editor.FunctionTooltips = true;
+		Editor.FunctionDeclarationTooltips = false;
 		Editor.SyntaxHighlighting = true;
 		Editor.ScrollbarMarkers = true;
 
 		Debug.ShowValuesOnHover = true;
-		Debug.AutoFetch = false;
+		Debug.AutoFetch = true;
 		Debug.PrimitiveOutline = true;
 		Debug.PixelOutline = true;
 
@@ -85,10 +86,8 @@ namespace ed {
 	{
 		Logger::Get().Log("Reading settings");
 
-		std::string settingsFileLoc = "data/settings.ini";
-		if (!LinuxHomeDirectory.empty())
-			settingsFileLoc = LinuxHomeDirectory + "data/settings.ini";
-		
+		std::string settingsFileLoc = Settings::Instance().ConvertPath("data/settings.ini");
+
 		INIReader ini(settingsFileLoc);
 
 		General.HLSLExtensions.clear();
@@ -141,11 +140,12 @@ namespace ed {
 		Editor.InsertSpaces = ini.GetBoolean("editor", "insertspace", false);
 		Editor.TabSize = std::max<int>(std::min<int>(ini.GetInteger("editor", "tabsize", 4), 12), 1);
 		Editor.FunctionTooltips = ini.GetBoolean("editor", "functooltips", true);
+		Editor.FunctionDeclarationTooltips = ini.GetBoolean("editor", "funcdeclrtooltips", false);
 		Editor.SyntaxHighlighting = ini.GetBoolean("editor", "syntaxhighlighting", true);
 		Editor.ScrollbarMarkers = ini.GetBoolean("editor", "scrollbarmarkers", true);
 
 		Debug.ShowValuesOnHover = ini.GetBoolean("debug", "valuesonhover", true);
-		Debug.AutoFetch = ini.GetBoolean("debug", "autofetch", false);
+		Debug.AutoFetch = ini.GetBoolean("debug", "autofetch", true);
 		Debug.PixelOutline = ini.GetBoolean("debug", "pixeloutline", true);
 		Debug.PrimitiveOutline = ini.GetBoolean("debug", "primitiveoutline", true);
 
@@ -178,9 +178,7 @@ namespace ed {
 	{
 		Logger::Get().Log("Saving settings");
 
-		std::string settingsFileLoc = "data/settings.ini";
-		if (!LinuxHomeDirectory.empty())
-			settingsFileLoc = LinuxHomeDirectory + "data/settings.ini";
+		std::string settingsFileLoc = Settings::Instance().ConvertPath("data/settings.ini");
 
 		std::ofstream ini(settingsFileLoc);
 
@@ -274,6 +272,7 @@ namespace ed {
 		ini << "insertspace=" << Editor.InsertSpaces << std::endl;
 		ini << "tabsize=" << Editor.TabSize << std::endl;
 		ini << "functooltips=" << Editor.FunctionTooltips << std::endl;
+		ini << "funcdeclrtooltips=" << Editor.FunctionDeclarationTooltips << std::endl;
 		ini << "syntaxhighlighting=" << Editor.SyntaxHighlighting << std::endl;
 		ini << "scrollbarmarkers=" << Editor.ScrollbarMarkers << std::endl;
 
@@ -291,6 +290,13 @@ namespace ed {
 				ini << " ";
 		}
 		ini << std::endl;
+	}
+
+	std::string Settings::ConvertPath(const std::string& path)
+	{
+		if (!this->LinuxHomeDirectory.empty())
+			return ed::Settings::Instance().LinuxHomeDirectory + path;
+		return path;
 	}
 
 	void Settings::m_parsePluginExt(const std::string& str, std::unordered_map<std::string, std::vector<std::string>>& extcontainer)

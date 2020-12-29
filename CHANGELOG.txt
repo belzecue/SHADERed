@@ -1,3 +1,70 @@
+[v1.4.3]
++ add geometry shader debugger
++ add "Auto" window
++ add "Save as GLSL" option
++ add "Language" dropdown to "Create Item" when creating a shader pass
++ add --compile and related commands
++ add function declaration tooltips
++ add scrollbar markers for changed lines
++ add the ability to temporarily disable breakpoint condition
++ add "Editor.DuplicateLine" shortcut
++ add "Editor.CommentLines" and "Editor.UncommentLines" shortcuts
++ add BufferFloat and BufferInt to input layout manager
++ add link to the blog post in the "Changelog" window
++ autocomplete now suggest object members after typing '.'
++ highlight SPIR-V code that corresponds to the line on which the shader debugger is currently located
++ list Rust and C++ shaders in 'Browse online' window if corresponding plugins are installed
++ creating a new project doesn't require a save location anymore
++ when creating a render texture the ratio size will now be used by default
++ remove "Clear" button in pixel inspect window
++ "Properties" window will now open (if it was closed) when opening the object's/item's properties
++ fix a bug that would sometimes crash SHADERed when pasting code
++ fix a bug that would cause SHADERed to crash when opening a newly created VertexBuffer item in the properties window
++ fix a bug that caused SHADERed to crash when deleting a input layout item
++ fix a bug that caused "Create item" window not to create shader files sometimes
++ fix a crash that happened when deleting last expression in the "Watch" window
++ fix "Auto indent on paste" feature
++ fix "Topology" dropdown in the properties (it was impossible to render a point list)
++ fix double click, CTRL+Backspace & CTRL+Delete shortcuts in the text editor
++ fix a bug that would cause the "Use geometry shader" flag to be completely ignored in "Create item" window
++ fix a bug that caused SHADERed to crash when plugin tried to add a message without a "group"
++ fix a bug that would sometimes cause SHADERed to store configs and downloads on non user owned folders on Linux
+
+[v1.4.2]
++ add "Save SPIR-V binary" option
++ add the ability to drag and drop objects on pipeline items
++ add --version | -v command line argument
++ add --render | -r, --renderwidth | -rw, --renderheight | -rh, --rendertime | -rt, etc... commands
++ add threading to "Browse online" window so that it doesn't block SHADERed
++ add OS support check for plugins in "Browse online" window
++ improve Pixel Inspect window's UI
++ improve message written after installing plugin through "Browse online" window
++ improve logging
++ reset file dialog search query after opening a directory
++ right clicking on the path button in file dialog will open path textbox
++ text editor's "Find" feature is now case insensitive
++ unpin the variable after applying system value to it
++ fix binding textures to HLSL shaders in the debugger
++ fix pipeline item drag and drop
++ fix "Check for plugin updates on startup" option
++ fix undo bug that happens after autocomplete
++ fix SPIR-V syntax highlighting on stats page
++ fix text editor scrolling
++ fix GLSL include directive
++ fix converting from SPIR-V to GLSL when multiple stages are in the same file
++ fix a bug that wouldnt let user open a project that used plugins through terminal
+
+[v1.4.1]
++ add compute shader debugger
++ add "Vector watch" window
++ add the ability to speed up the first person camera's movement by holding SHIFT key
++ add the ability to paste full file path in the file dialog
++ switch from Dear ImGui's 'Columns API' to 'Tables API' in "Watches" & "Breakpoints" window
++ fix a bug that would cause SHADERed to crash when using immediate mode while debugging vertex shaders
++ fix a bug that would cause SHADERed to crash if shader has a function with a texture as an argument
++ fix a bug that would keep the debugger running after "Save As"
++ fix a bug that wouldn't add a project to recents after "Save As"
+
 [v1.4]
 + web version of SHADERed: https://shadered.org
 + add 'Browse online' window -> install plugins, themes & shaders through the application

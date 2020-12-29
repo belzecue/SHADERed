@@ -6,6 +6,7 @@
 #include <SHADERed/Objects/SystemVariableManager.h>
 #include <SHADERed/Objects/ThemeContainer.h>
 #include <SHADERed/Options.h>
+#include <SHADERed/UI/PixelInspectUI.h>
 #include <SHADERed/UI/CodeEditorUI.h>
 #include <SHADERed/UI/Icons.h>
 #include <SHADERed/UI/PinnedUI.h>
@@ -117,6 +118,10 @@ namespace ed {
 		m_itemMenuOpened = false;
 
 		// various popups
+		if (m_isComputeDebugOpen) {
+			ImGui::OpenPopup("Debug compute shader");
+			m_isComputeDebugOpen = false;
+		}
 		if (m_isVarManagerOpened) {
 			ImGui::OpenPopup("Variable Manager##pui_shader_variables");
 			m_isVarManagerOpened = false;
@@ -144,6 +149,53 @@ namespace ed {
 		if (m_isConfirmDeleteOpened) {
 			ImGui::OpenPopup("Delete##pui_item_delete");
 			m_isConfirmDeleteOpened = false;
+		}
+
+		// Compute shader debugger
+		ImGui::SetNextWindowSize(ImVec2(Settings::Instance().CalculateSize(430), Settings::Instance().CalculateSize(210)), ImGuiCond_Once);
+		if (ImGui::BeginPopupModal("Debug compute shader")) {
+			ImGui::Text("Global thread ID:");
+			ImGui::SameLine();
+			if (ImGui::InputScalarN("##dbg_thread_id", ImGuiDataType_U32, (void*)m_thread, 3, 0, (const void*)1)) {
+				m_thread[0] = std::min<int>(m_thread[0], m_localSizeX * m_groupsX - 1);
+				m_thread[1] = std::min<int>(m_thread[1], m_localSizeY * m_groupsY - 1);
+				m_thread[2] = std::min<int>(m_thread[2], m_localSizeZ * m_groupsZ - 1);
+			}
+			
+			int localInvocationIndex = (m_thread[2] % m_localSizeZ) * m_localSizeX * m_localSizeZ +
+										(m_thread[1] % m_localSizeY) * m_localSizeX +
+										(m_thread[0] % m_localSizeX);
+
+			if (m_computeLang == ed::ShaderLanguage::HLSL) {
+				ImGui::Text("SV_GroupID -> uint3(%d, %d, %d)", m_thread[0] / m_localSizeX, m_thread[1] / m_localSizeY, m_thread[2] / m_localSizeZ);
+				ImGui::Text("SV_GroupThreadID -> uint3(%d, %d, %d)", m_thread[0] % m_localSizeX, m_thread[1] % m_localSizeY, m_thread[2] % m_localSizeZ);
+				ImGui::Text("SV_DispatchThreadID -> uint3(%d, %d, %d)", m_thread[0], m_thread[1], m_thread[2]);
+				ImGui::Text("SV_GroupIndex -> %d", localInvocationIndex);
+			} else {
+				ImGui::Text("gl_NumWorkGroups -> uvec3(%d, %d, %d)", m_groupsX, m_groupsY, m_groupsZ);
+				ImGui::Text("gl_WorkGroupID -> uvec3(%d, %d, %d)", m_thread[0] / m_localSizeX, m_thread[1] / m_localSizeY, m_thread[2] / m_localSizeZ);
+				ImGui::Text("gl_LocalInvocationID -> uvec3(%d, %d, %d)", m_thread[0] % m_localSizeX, m_thread[1] % m_localSizeY, m_thread[2] % m_localSizeZ);
+				ImGui::Text("gl_GlobalInvocationID -> uvec3(%d, %d, %d)", m_thread[0], m_thread[1], m_thread[2]);
+				ImGui::Text("gl_LocalInvocationIndex -> %d", localInvocationIndex);
+			}
+
+			if (ImGui::Button("Cancel")) m_closePopup();
+			ImGui::SameLine();
+			if (ImGui::Button("Start")) {
+				pipe::ComputePass* pass = ((pipe::ComputePass*)m_modalItem->Data);
+				// TODO: plugins?
+
+				CodeEditorUI* codeUI = (reinterpret_cast<CodeEditorUI*>(m_ui->Get(ViewID::Code)));
+				codeUI->StopDebugging();
+				codeUI->Open(m_modalItem, ShaderStage::Compute);
+				TextEditor* editor = codeUI->Get(m_modalItem, ShaderStage::Compute);
+
+				m_data->Debugger.PrepareComputeShader(m_modalItem, m_thread[0], m_thread[1], m_thread[2]);
+				((PixelInspectUI*)m_ui->Get(ViewID::PixelInspect))->StartDebugging(editor, nullptr);
+
+				m_closePopup();
+			}
+			ImGui::EndPopup();
 		}
 
 		// Shader Variable manager
@@ -266,7 +318,7 @@ namespace ed {
 		
 		// check if it is opened in property viewer/picked
 		if (props->HasItemSelected() && props->CurrentItemName() == item->Name)
-			props->Open(nullptr);
+			props->Close();
 		if (prev->IsPicked(item))
 			prev->Pick(nullptr);
 
@@ -275,7 +327,7 @@ namespace ed {
 			pipe::ShaderPass* pass = (pipe::ShaderPass*)item->Data;
 			for (const auto& child : pass->Items) {
 				if (props->HasItemSelected() && props->CurrentItemName() == child->Name)
-					props->Open(nullptr);
+					props->Close();
 				if (prev->IsPicked(child))
 					prev->Pick(nullptr);
 			}
@@ -283,7 +335,7 @@ namespace ed {
 			pipe::PluginItemData* pass = (pipe::PluginItemData*)item->Data;
 			for (const auto& child : pass->Items) {
 				if (props->HasItemSelected() && props->CurrentItemName() == child->Name)
-					props->Open(nullptr);
+					props->Close();
 				if (prev->IsPicked(child))
 					prev->Pick(nullptr);
 			}
@@ -437,6 +489,38 @@ namespace ed {
 					}
 
 					ImGui::EndMenu();
+				}
+
+
+				if (!m_data->Renderer.IsPaused()) {
+					ImGui::PushItemFlag(ImGuiItemFlags_Disabled, true);
+					ImGui::PushStyleVar(ImGuiStyleVar_Alpha, ImGui::GetStyle().Alpha * 0.5f);
+				}
+				if (items[index]->Type == PipelineItem::ItemType::ComputePass && ImGui::MenuItem("Debug")) {
+					pipe::ComputePass* pass = (pipe::ComputePass*)items[index]->Data;
+
+					m_isComputeDebugOpen = true;
+					m_modalItem = items[index];
+
+					m_localSizeX = m_localSizeY = m_localSizeZ = 1;
+					m_groupsX = pass->WorkX;
+					m_groupsY = pass->WorkY;
+					m_groupsZ = pass->WorkZ;
+					m_thread[0] = m_thread[1] = m_thread[2] = 0;
+					m_computeLang = ed::ShaderCompiler::GetShaderLanguageFromExtension(pass->Path);
+
+					if (pass->SPV.size() > 0) {
+						SPIRVParser parser;
+						parser.Parse(pass->SPV);
+
+						m_localSizeX = parser.LocalSizeX;
+						m_localSizeY = parser.LocalSizeY;
+						m_localSizeZ = parser.LocalSizeZ;
+					}
+				}
+				if (!m_data->Renderer.IsPaused()) {
+					ImGui::PopItemFlag();
+					ImGui::PopStyleVar();
 				}
 
 				if (!isPlugin && ImGui::MenuItem("Variables")) {
@@ -598,10 +682,11 @@ namespace ed {
 
 		/* EXISTING INPUTS */
 		for (auto& el : els) {
+			ImGui::PushID(id);
 			ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
 
 			/* UP BUTTON */
-			if (ImGui::Button((UI_ICON_ARROW_UP "##" + std::to_string(id)).c_str(), BUTTON_ICON_SIZE) && id != 0) {
+			if (ImGui::Button(UI_ICON_ARROW_UP, BUTTON_ICON_SIZE) && id != 0) {
 				InputLayoutItem temp = els[id - 1];
 				els[id - 1] = el;
 				els[id] = temp;
@@ -610,7 +695,7 @@ namespace ed {
 			}
 			ImGui::SameLine(0, 0);
 			/* DOWN BUTTON */
-			if (ImGui::Button((UI_ICON_ARROW_DOWN "##" + std::to_string(id)).c_str(), BUTTON_ICON_SIZE) && id != els.size() - 1) {
+			if (ImGui::Button(UI_ICON_ARROW_DOWN, BUTTON_ICON_SIZE) && id != els.size() - 1) {
 				InputLayoutItem temp = els[id + 1];
 				els[id + 1] = el;
 				els[id] = temp;
@@ -619,11 +704,13 @@ namespace ed {
 			}
 			ImGui::SameLine(0, 0);
 			/* DELETE BUTTON */
-			if (ImGui::Button((UI_ICON_DELETE "##" + std::to_string(id)).c_str(), BUTTON_ICON_SIZE)) {
+			if (ImGui::Button(UI_ICON_DELETE, BUTTON_ICON_SIZE)) {
 				els.erase(els.begin() + id);
-				ImGui::PopStyleColor();
 
 				m_data->Parser.ModifyProject();
+
+				ImGui::PopStyleColor();
+				ImGui::PopID();
 
 				continue;
 			}
@@ -638,7 +725,7 @@ namespace ed {
 			/* VALUE */
 			ImGui::PushItemWidth(-ImGui::GetStyle().FramePadding.x);
 			const char* valueComboPreview = ATTRIBUTE_VALUE_NAMES[(int)el.Value];
-			if (ImGui::BeginCombo(("##value" + std::to_string(id)).c_str(), valueComboPreview)) {
+			if (ImGui::BeginCombo("##value", valueComboPreview)) {
 				for (int n = 0; n < HARRAYSIZE(ATTRIBUTE_VALUE_NAMES); n++) {
 					bool is_selected = (n == (int)el.Value);
 					if (ImGui::Selectable(ATTRIBUTE_VALUE_NAMES[n], is_selected)) {
@@ -657,6 +744,7 @@ namespace ed {
 			ImGui::Text("%s (currently not supported)", el.Semantic.c_str());
 			ImGui::NextColumn();
 
+			ImGui::PopID();
 			id++;
 		}
 
@@ -739,10 +827,11 @@ namespace ed {
 
 		/* EXISTING VARIABLES */
 		for (auto& el : els) {
+			ImGui::PushID(id);
 			ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
 
 			/* UP BUTTON */
-			if (ImGui::Button((UI_ICON_ARROW_UP "##" + std::to_string(id)).c_str(), BUTTON_ICON_SIZE) && id != 0) {
+			if (ImGui::Button(UI_ICON_ARROW_UP, BUTTON_ICON_SIZE) && id != 0) {
 				// check if any of the affected variables are pinned
 				PinnedUI* pinState = ((PinnedUI*)m_ui->Get(ViewID::Pinned));
 				bool containsCur = pinState->Contains(el->Name);
@@ -768,7 +857,7 @@ namespace ed {
 			}
 			ImGui::SameLine(0, 0);
 			/* DOWN BUTTON */
-			if (ImGui::Button((UI_ICON_ARROW_DOWN "##" + std::to_string(id)).c_str(), BUTTON_ICON_SIZE) && id != els.size() - 1) {
+			if (ImGui::Button(UI_ICON_ARROW_DOWN, BUTTON_ICON_SIZE) && id != els.size() - 1) {
 				// check if any of the affected variables are pinned
 				PinnedUI* pinState = ((PinnedUI*)m_ui->Get(ViewID::Pinned));
 				bool containsCur = pinState->Contains(el->Name);
@@ -794,7 +883,7 @@ namespace ed {
 			}
 			ImGui::SameLine(0, 0);
 			/* DELETE BUTTON */
-			if (ImGui::Button((UI_ICON_DELETE "##" + std::to_string(id)).c_str(), BUTTON_ICON_SIZE)) {
+			if (ImGui::Button(UI_ICON_DELETE, BUTTON_ICON_SIZE)) {
 				((PinnedUI*)m_ui->Get(ViewID::Pinned))->Remove(el->Name); // unpin if pinned
 
 				m_data->Parser.ModifyProject();
@@ -826,26 +915,31 @@ namespace ed {
 				}
 
 				ImGui::PopStyleColor();
+				ImGui::PopID();
 				continue;
 			}
 			ImGui::SameLine(0, 0);
 			/* EDIT & PIN BUTTONS */
 			if (el->System == ed::SystemShaderVariable::None) {
-				if (ImGui::Button((UI_ICON_EDIT "##" + std::to_string(id)).c_str(), BUTTON_ICON_SIZE)) {
+				if (ImGui::Button(UI_ICON_EDIT "##inputEdit", BUTTON_ICON_SIZE)) {
+					ImGui::PopID();
+
 					ImGui::OpenPopup("Value Edit##pui_shader_value_edit");
 					m_valueEdit.Open(el);
+
+					ImGui::PushID(id);
 				}
 				ImGui::SameLine(0, 0);
 
 				PinnedUI* pinState = ((PinnedUI*)m_ui->Get(ViewID::Pinned));
 				if (!pinState->Contains(el->Name)) {
-					if (ImGui::Button((UI_ICON_ADD "##" + std::to_string(id)).c_str(), BUTTON_ICON_SIZE)) {
+					if (ImGui::Button(UI_ICON_ADD, BUTTON_ICON_SIZE)) {
 						pinState->Add(el);
 						m_data->Parser.ModifyProject();
 					}
 					m_tooltip("Pin");
 				} else {
-					if (ImGui::Button((UI_ICON_REMOVE "##" + std::to_string(id)).c_str(), BUTTON_ICON_SIZE)) {
+					if (ImGui::Button(UI_ICON_REMOVE, BUTTON_ICON_SIZE)) {
 						pinState->Remove(el->Name);
 						m_data->Parser.ModifyProject();
 					}
@@ -861,14 +955,14 @@ namespace ed {
 			/* TYPE */
 			ImGui::PushItemWidth(-ImGui::GetStyle().FramePadding.x);
 			ShaderVariable::ValueType tempType = el->GetType();
-			if (ImGui::Combo(("##inputType" + std::to_string(id)).c_str(), reinterpret_cast<int*>(&tempType), isGLSL ? VARIABLE_TYPE_NAMES_GLSL : VARIABLE_TYPE_NAMES, HARRAYSIZE(VARIABLE_TYPE_NAMES)))
+			if (ImGui::Combo("##inputType", reinterpret_cast<int*>(&tempType), isGLSL ? VARIABLE_TYPE_NAMES_GLSL : VARIABLE_TYPE_NAMES, HARRAYSIZE(VARIABLE_TYPE_NAMES)))
 				if (tempType != el->GetType())
 					el->SetType(tempType);
 			ImGui::NextColumn();
 
 			/* NAME */
 			ImGui::PushItemWidth(-ImGui::GetStyle().FramePadding.x);
-			if (ImGui::InputText(("##name" + std::to_string(id)).c_str(), const_cast<char*>(el->Name), VARIABLE_NAME_LENGTH)) {
+			if (ImGui::InputText("##name", const_cast<char*>(el->Name), VARIABLE_NAME_LENGTH)) {
 				m_data->Parser.ModifyProject();
 			}
 			ImGui::NextColumn();
@@ -877,7 +971,8 @@ namespace ed {
 			ImGui::PushItemWidth(-ImGui::GetStyle().FramePadding.x);
 			const char* systemComboPreview = el->System == SystemShaderVariable::PluginVariable ? (el->PluginSystemVarData.Name) : (SYSTEM_VARIABLE_NAMES[(int)el->System]);
 
-			if (ImGui::BeginCombo(("##system" + std::to_string(id)).c_str(), systemComboPreview)) {
+			if (ImGui::BeginCombo("##system", systemComboPreview)) {
+				bool removeFromPins = false;
 				for (int n = 0; n < HARRAYSIZE(SYSTEM_VARIABLE_NAMES); n++) {
 					bool is_selected = (n == (int)el->System);
 					if (n != (int)SystemShaderVariable::PluginVariable) {
@@ -885,16 +980,24 @@ namespace ed {
 							&& ImGui::Selectable(SYSTEM_VARIABLE_NAMES[n], is_selected)) {
 							el->System = (ed::SystemShaderVariable)n;
 							m_data->Parser.ModifyProject();
+							removeFromPins = true;
 						}
 					} else {
 						bool modified = m_data->Plugins.ShowSystemVariables(&el->PluginSystemVarData, el->GetType());
 						if (modified) {
 							m_data->Parser.ModifyProject();
 							el->System = SystemShaderVariable::PluginVariable;
+							removeFromPins = true;
 						}
 					}
 					if (is_selected)
 						ImGui::SetItemDefaultFocus();
+					if (removeFromPins && n != 0) {
+						PinnedUI* pinState = ((PinnedUI*)m_ui->Get(ViewID::Pinned));
+						if (pinState->Contains(el->Name))
+							pinState->Remove(el->Name);
+						removeFromPins = false;
+					}
 				}
 				ImGui::EndCombo();
 			}
@@ -906,6 +1009,7 @@ namespace ed {
 			ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0, 0, 0, 0));
 			ImGui::NextColumn();
 
+			ImGui::PopID();
 			id++;
 		}
 
@@ -956,7 +1060,7 @@ namespace ed {
 
 		/* TYPE */
 		ImGui::PushItemWidth(-ImGui::GetStyle().FramePadding.x);
-		if (ImGui::Combo("##inputType", reinterpret_cast<int*>(&iValueType), isGLSL ? VARIABLE_TYPE_NAMES_GLSL : VARIABLE_TYPE_NAMES, HARRAYSIZE(VARIABLE_TYPE_NAMES))) {
+		if (ImGui::Combo("##createVarType", reinterpret_cast<int*>(&iValueType), isGLSL ? VARIABLE_TYPE_NAMES_GLSL : VARIABLE_TYPE_NAMES, HARRAYSIZE(VARIABLE_TYPE_NAMES))) {
 			if (iValueType != iVariable.GetType()) {
 				ed::ShaderVariable newVariable(iValueType);
 				memcpy(newVariable.Name, iVariable.Name, strlen(iVariable.Name));
@@ -971,7 +1075,7 @@ namespace ed {
 
 		/* NAME */
 		ImGui::PushItemWidth(-ImGui::GetStyle().FramePadding.x);
-		ImGui::InputText("##inputName", const_cast<char*>(iVariable.Name), VARIABLE_NAME_LENGTH);
+		ImGui::InputText("##createVarName", const_cast<char*>(iVariable.Name), VARIABLE_NAME_LENGTH);
 		ImGui::NextColumn();
 
 		if (scrollToBottom) {
@@ -984,7 +1088,7 @@ namespace ed {
 		const char* inputComboPreview = iVariable.System == SystemShaderVariable::PluginVariable ?
 			iVariable.PluginSystemVarData.Name :
 			SYSTEM_VARIABLE_NAMES[(int)iVariable.System];
-		if (ImGui::BeginCombo(("##system" + std::to_string(id)).c_str(), inputComboPreview)) {
+		if (ImGui::BeginCombo("##createVarsystem", inputComboPreview)) {
 			for (int n = 0; n < (int)SystemShaderVariable::Count; n++) {
 				bool is_selected = (n == (int)iVariable.System);
 				if (n != (int)SystemShaderVariable::PluginVariable) {
@@ -1009,8 +1113,8 @@ namespace ed {
 
 		//ImGui::PopItemWidth();
 
-		ImGui::EndChild();
 		ImGui::Columns(1);
+		ImGui::EndChild();
 	}
 	void PipelineUI::m_renderChangeVariablesUI()
 	{
@@ -1059,23 +1163,30 @@ namespace ed {
 			if (i.Item != m_modalItem)
 				continue;
 
+			ImGui::PushID(id);
+
 			/* NAME */
 			ImGui::PushItemWidth(-ImGui::GetStyle().FramePadding.x);
 			ImGui::Text(i.Variable->Name);
 			ImGui::NextColumn();
 
 			ImGui::PushItemWidth(-ImGui::GetStyle().FramePadding.x);
-			if (ImGui::Button((UI_ICON_EDIT "##edBtn" + std::to_string(id)).c_str(), BUTTON_ICON_SIZE)) {
+			if (ImGui::Button(UI_ICON_EDIT, BUTTON_ICON_SIZE)) {
+				ImGui::PopID();
+
 				ImGui::OpenPopup("Value Edit##pui_shader_ivalue_edit");
 				m_valueEdit.Open(i.NewValue);
+
+				ImGui::PushID(id);
 			}
 			ImGui::SameLine();
-			if (ImGui::Button((UI_ICON_DELETE "##delBtn" + std::to_string(id)).c_str(), BUTTON_ICON_SIZE)) {
+			if (ImGui::Button(UI_ICON_DELETE, BUTTON_ICON_SIZE)) {
 				m_data->Renderer.RemoveItemVariableValue(i.Item, i.Variable);
 				m_data->Parser.ModifyProject();
 			}
 			ImGui::NextColumn();
 
+			ImGui::PopID();
 			id++;
 		}
 
@@ -1102,7 +1213,7 @@ namespace ed {
 		ImGui::PushItemWidth(-ImGui::GetStyle().FramePadding.x);
 		shaderVarSel = std::min<int>(shaderVarSel, vars.size()-1);
 		const char* inputComboPreview = vars.size() > 0 ? vars[shaderVarSel]->Name : "-- NONE --";
-		if (ImGui::BeginCombo(("##itemvarname" + std::to_string(id)).c_str(), inputComboPreview)) {
+		if (ImGui::BeginCombo("##itemvarname", inputComboPreview)) {
 			for (int n = 0; n < vars.size(); n++) {
 				bool is_selected = (n == shaderVarSel);
 				if (ImGui::Selectable(vars[n]->Name, is_selected))
@@ -1173,16 +1284,20 @@ namespace ed {
 
 			int id = 0;
 			std::vector<GLuint>& els = m_data->Objects.GetBindList(m_modalItem);
-			const std::vector<std::string>& items = m_data->Objects.GetObjects();
 
 			/* EXISTING VARIABLES */
 			for (const auto& el : els) {
-				const std::string& itemName = m_data->Objects.GetItemNameByTextureID(el);
+				ImGui::PushID(id);
+				ObjectManagerItem* resData = m_data->Objects.GetByTextureID(el);
+				if (resData == nullptr)
+					resData = m_data->Objects.GetByBufferID(el);
+				if (resData == nullptr)
+					continue;
 
 				/* CONTROLS */
 				ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
 				/* UP BUTTON */
-				if (ImGui::Button((UI_ICON_ARROW_UP "##s" + std::to_string(id)).c_str()) && id != 0) {
+				if (ImGui::Button(UI_ICON_ARROW_UP "##s") && id != 0) {
 					GLuint temp = els[id - 1];
 					els[id - 1] = el;
 					els[id] = temp;
@@ -1190,7 +1305,7 @@ namespace ed {
 				}
 				ImGui::SameLine(0, 0);
 				/* DOWN BUTTON */
-				if (ImGui::Button((UI_ICON_ARROW_DOWN "##s" + std::to_string(id)).c_str()) && id != els.size() - 1) {
+				if (ImGui::Button(UI_ICON_ARROW_DOWN "##s") && id != els.size() - 1) {
 					GLuint temp = els[id + 1];
 					els[id + 1] = el;
 					els[id] = temp;
@@ -1204,26 +1319,27 @@ namespace ed {
 				ImGui::NextColumn();
 
 				/* NAME */
-				if (objs->IsImage(itemName))
+				if (resData->Type == ObjectType::Image)
 					ImGui::Text("image");
-				else if (objs->IsImage3D(itemName))
+				else if (resData->Type == ObjectType::Image3D)
 					ImGui::Text("image3D");
-				else if (objs->IsRenderTexture(itemName))
+				else if (resData->Type == ObjectType::RenderTexture)
 					ImGui::Text("render texture");
-				else if (objs->IsAudio(itemName))
+				else if (resData->Type == ObjectType::Audio)
 					ImGui::Text("audio");
-				else if (objs->IsBuffer(itemName))
+				else if (resData->Type == ObjectType::Buffer)
 					ImGui::Text("buffer");
-				else if (objs->IsCubeMap(itemName))
+				else if (resData->Type == ObjectType::CubeMap)
 					ImGui::Text("cubemap");
 				else
 					ImGui::Text("texture");
 				ImGui::NextColumn();
 
 				/* VALUE */
-				ImGui::Text("%s", itemName.c_str());
+				ImGui::Text("%s", resData->Name.c_str());
 				ImGui::NextColumn();
 
+				ImGui::PopID();
 				id++;
 			}
 
@@ -1261,16 +1377,20 @@ namespace ed {
 
 			int id = 0;
 			std::vector<GLuint>& els = m_data->Objects.GetUniformBindList(m_modalItem);
-			const std::vector<std::string>& items = m_data->Objects.GetObjects();
 
 			/* EXISTING VARIABLES */
 			for (const auto& el : els) {
-				const std::string& itemName = m_data->Objects.GetItemNameByTextureID(el);
+				ImGui::PushID(id);
+				ObjectManagerItem* resData = m_data->Objects.GetByTextureID(el);
+				if (resData == nullptr)
+					resData = m_data->Objects.GetByBufferID(el);
+				if (resData == nullptr)
+					continue;
 
 				/* CONTROLS */
 				ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
 				/* UP BUTTON */
-				if (ImGui::Button((UI_ICON_ARROW_UP "##u" + std::to_string(id)).c_str()) && id != 0) {
+				if (ImGui::Button(UI_ICON_ARROW_UP "##u") && id != 0) {
 					GLuint temp = els[id - 1];
 					els[id - 1] = el;
 					els[id] = temp;
@@ -1278,7 +1398,7 @@ namespace ed {
 				}
 				ImGui::SameLine(0, 0);
 				/* DOWN BUTTON */
-				if (ImGui::Button((UI_ICON_ARROW_DOWN "##u" + std::to_string(id)).c_str()) && id != els.size() - 1) {
+				if (ImGui::Button(UI_ICON_ARROW_DOWN "##u") && id != els.size() - 1) {
 					GLuint temp = els[id + 1];
 					els[id + 1] = el;
 					els[id] = temp;
@@ -1292,26 +1412,28 @@ namespace ed {
 				ImGui::NextColumn();
 
 				/* NAME */
-				if (objs->IsImage(itemName))
+				if (resData->Type == ObjectType::Image)
 					ImGui::Text("image");
-				else if (objs->IsImage3D(itemName))
+				else if (resData->Type == ObjectType::Image3D)
 					ImGui::Text("image3D");
-				else if (objs->IsRenderTexture(itemName))
+				else if (resData->Type == ObjectType::RenderTexture)
 					ImGui::Text("render texture");
-				else if (objs->IsAudio(itemName))
+				else if (resData->Type == ObjectType::Audio)
 					ImGui::Text("audio");
-				else if (objs->IsBuffer(itemName))
+				else if (resData->Type == ObjectType::Buffer)
 					ImGui::Text("buffer");
-				else if (objs->IsCubeMap(itemName))
+				else if (resData->Type == ObjectType::CubeMap)
 					ImGui::Text("cubemap");
 				else
 					ImGui::Text("texture");
 				ImGui::NextColumn();
 
 				/* VALUE */
-				ImGui::Text("%s", itemName.c_str());
+				ImGui::Text("%s", resData->Name.c_str());
 				ImGui::NextColumn();
 
+
+				ImGui::PopID();
 				id++;
 			}
 
@@ -1350,10 +1472,12 @@ namespace ed {
 
 		/* EXISTING VARIABLES */
 		for (auto& el : els) {
+			ImGui::PushID(id);
+
 			/* CONTROLS */
 			ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
 			/* UP BUTTON */
-			if (ImGui::Button((UI_ICON_ARROW_UP "##" + std::to_string(id)).c_str()) && id != 0) {
+			if (ImGui::Button(UI_ICON_ARROW_UP) && id != 0) {
 				ed::ShaderMacro temp = els[id - 1];
 				els[id - 1] = el;
 				els[id] = temp;
@@ -1361,7 +1485,7 @@ namespace ed {
 			}
 			ImGui::SameLine(0, 0);
 			/* DOWN BUTTON */
-			if (ImGui::Button((UI_ICON_ARROW_DOWN "##" + std::to_string(id)).c_str()) && id != els.size() - 1) {
+			if (ImGui::Button(UI_ICON_ARROW_DOWN) && id != els.size() - 1) {
 				ed::ShaderMacro temp = els[id + 1];
 				els[id + 1] = el;
 				els[id] = temp;
@@ -1369,7 +1493,7 @@ namespace ed {
 			}
 			ImGui::SameLine(0, 0);
 			/* DELETE BUTTON */
-			if (ImGui::Button((UI_ICON_DELETE "##" + std::to_string(id)).c_str())) {
+			if (ImGui::Button(UI_ICON_DELETE)) {
 				els.erase(els.begin() + id);
 				id--;
 				m_data->Parser.ModifyProject();
@@ -1379,22 +1503,24 @@ namespace ed {
 
 			/* ACTIVE */
 			ImGui::PushItemWidth(-ImGui::GetStyle().FramePadding.x);
-			if (ImGui::Checkbox(("##pui_mcr_act" + std::to_string(id)).c_str(), &el.Active))
+			if (ImGui::Checkbox("##pui_mcr_act", &el.Active))
 				m_data->Parser.ModifyProject();
 			ImGui::NextColumn();
 
 			/* NAME */
 			ImGui::PushItemWidth(-ImGui::GetStyle().FramePadding.x);
-			if (ImGui::InputText(("##mcrName" + std::to_string(id)).c_str(), el.Name, 32))
+			if (ImGui::InputText("##mcrName", el.Name, 32))
 				m_data->Parser.ModifyProject();
 			ImGui::NextColumn();
 
 			/* VALUE */
 			ImGui::PushItemWidth(-ImGui::GetStyle().FramePadding.x);
-			if (ImGui::InputText(("##mcrVal" + std::to_string(id)).c_str(), el.Value, 512))
+			if (ImGui::InputText("##mcrVal", el.Value, 512))
 				m_data->Parser.ModifyProject();
 			ImGui::NextColumn();
 
+
+			ImGui::PopID();
 			id++;
 		}
 
@@ -1424,17 +1550,17 @@ namespace ed {
 
 		/* ACTIVE */
 		ImGui::PushItemWidth(-ImGui::GetStyle().FramePadding.x);
-		ImGui::Checkbox(("##pui_mcrActAdd" + std::to_string(id)).c_str(), &addMacro.Active);
+		ImGui::Checkbox("##pui_mcrActAdd", &addMacro.Active);
 		ImGui::NextColumn();
 
 		/* NAME */
 		ImGui::PushItemWidth(-ImGui::GetStyle().FramePadding.x);
-		ImGui::InputText(("##mcrNameAdd" + std::to_string(id)).c_str(), addMacro.Name, 32);
+		ImGui::InputText("##mcrNameAdd", addMacro.Name, 32);
 		ImGui::NextColumn();
 
 		/* VALUE */
 		ImGui::PushItemWidth(-ImGui::GetStyle().FramePadding.x);
-		ImGui::InputText(("##mcrValAdd" + std::to_string(id)).c_str(), addMacro.Value, 512);
+		ImGui::InputText("##mcrValAdd", addMacro.Value, 512);
 		ImGui::NextColumn();
 
 		if (scrollToBottom) {
@@ -1511,6 +1637,7 @@ namespace ed {
 			}
 
 		if (ImGui::BeginDragDropTarget()) {
+			// pipeline item
 			if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("PipelineItemPayload")) {
 				// TODO: m_data->Pipeline.DuplicateItem() ?
 				ed::PipelineItem* dropItem = *(reinterpret_cast<ed::PipelineItem**>(payload->Data));
@@ -1544,6 +1671,7 @@ namespace ed {
 
 				// get item owner
 				void* itemData = nullptr;
+				PipelineItem::ItemType itemType = dropItem->Type;
 
 				// once we found a name, duplicate the properties:
 				// duplicate geometry object:
@@ -1646,7 +1774,7 @@ namespace ed {
 				if (!duplicate) {
 					PropertyUI* props = ((PropertyUI*)m_ui->Get(ViewID::Properties));
 					if (props->HasItemSelected() && props->CurrentItemName() == dropItem->Name)
-						props->Open(nullptr);
+						props->Close();
 
 					PreviewUI* prev = ((PreviewUI*)m_ui->Get(ViewID::Preview));
 					if (prev->IsPicked(dropItem))
@@ -1655,8 +1783,15 @@ namespace ed {
 					m_data->Pipeline.Remove(dropItem->Name);
 				}
 
-				m_data->Pipeline.AddItem(item->Name, name.c_str(), dropItem->Type, itemData);
+				m_data->Pipeline.AddItem(item->Name, name.c_str(), itemType, itemData);
 			}
+			
+			// object
+			if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("ObjectPayload")) {
+				ed::ObjectManagerItem* dropItem = *(reinterpret_cast<ed::ObjectManagerItem**>(payload->Data));
+				m_handleObjectDrop(item, dropItem);
+			}
+			
 			ImGui::EndDragDropTarget();
 		}
 
@@ -1709,6 +1844,15 @@ namespace ed {
 			}
 		ImGui::Unindent(PIPELINE_SHADER_PASS_INDENT);
 
+		if (ImGui::BeginDragDropTarget()) {
+			// object
+			if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("ObjectPayload")) {
+				ed::ObjectManagerItem* dropItem = *(reinterpret_cast<ed::ObjectManagerItem**>(payload->Data));
+				m_handleObjectDrop(item, dropItem);
+			}
+
+			ImGui::EndDragDropTarget();
+		}
 
 		if (!data->Active)
 			ImGui::PopStyleVar();
@@ -1909,7 +2053,7 @@ namespace ed {
 					if (!duplicate) {
 						PropertyUI* props = ((PropertyUI*)m_ui->Get(ViewID::Properties));
 						if (props->HasItemSelected() && props->CurrentItemName() == dropItem->Name)
-							props->Open(nullptr);
+							props->Close();
 
 						PreviewUI* prev = ((PreviewUI*)m_ui->Get(ViewID::Preview));
 						if (prev->IsPicked(dropItem))
@@ -1957,8 +2101,50 @@ namespace ed {
 			}
 		if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_None)) {
 			ImGui::SetDragDropPayload("PipelineItemPayload", &item, sizeof(ed::PipelineItem**));
+
+			ImGui::Text("%s", item->Name);
+
 			ImGui::EndDragDropSource();
 		}
 		ImGui::Unindent(PIPELINE_ITEM_INDENT);
+	}
+	void PipelineUI::m_handleObjectDrop(ed::PipelineItem* pass, ed::ObjectManagerItem* object)
+	{
+		Logger::Get().Log("Handling an object drop on pipeline item");
+
+		bool isPluginOwner = object->Plugin != nullptr;
+		PluginObject* pobj = object->Plugin;
+
+		bool bindAsUAV = false;
+		bool bindAsSRV = false;
+
+		if (object->Image != nullptr || object->Image3D != nullptr) {
+			// bind image and image3D as UAV to compute passes
+			if (pass->Type == PipelineItem::ItemType::ComputePass)
+				bindAsUAV = true;
+			// but as SRV to shader passes
+			else if (pass->Type == PipelineItem::ItemType::ShaderPass)
+				bindAsSRV = true;
+		} else {
+			bool isPluginObjBindable = isPluginOwner && (pobj->Owner->Object_IsBindable(pobj->Type) || pobj->Owner->Object_IsBindableUAV(pobj->Type));
+			if (isPluginObjBindable || !isPluginOwner) {
+				bool isPluginObjUAV = isPluginOwner && pobj->Owner->Object_IsBindableUAV(pobj->Type);
+
+				if (object->Buffer != nullptr || isPluginObjUAV)
+					bindAsUAV = true;
+				else
+					bindAsSRV = true;
+			}
+		}
+
+		if (bindAsUAV) {
+			int boundID = m_data->Objects.IsUniformBound(object, pass);
+			if (boundID == -1)
+				m_data->Objects.BindUniform(object, pass);
+		} else if (bindAsSRV) {
+			int boundID = m_data->Objects.IsBound(object, pass);
+			if (boundID == -1)
+				m_data->Objects.Bind(object, pass);
+		}
 	}
 }

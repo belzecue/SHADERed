@@ -51,18 +51,14 @@ namespace ed {
 	}
 	void PluginManager::Init(InterfaceManager* data, GUIManager* ui)
 	{
-		std::string pluginsDirLoc = "./plugins/";
-		if (!ed::Settings::Instance().LinuxHomeDirectory.empty())
-			pluginsDirLoc = ed::Settings::Instance().LinuxHomeDirectory + "plugins/";
+		std::string pluginsDirLoc = Settings::Instance().ConvertPath("plugins/");
 
 		if (!std::filesystem::exists(pluginsDirLoc)) {
 			ed::Logger::Get().Log("Directory for plugins doesn't exist");
 			return;
 		}
 
-		std::string settingsFileLoc = "data/plugin_settings.ini";
-		if (!ed::Settings::Instance().LinuxHomeDirectory.empty())
-			settingsFileLoc = ed::Settings::Instance().LinuxHomeDirectory + "data/plugin_settings.ini";
+		std::string settingsFileLoc = ed::Settings::Instance().ConvertPath("data/plugin_settings.ini");
 
 		std::ifstream ini(settingsFileLoc);
 		std::vector<std::string> iniLines;
@@ -82,6 +78,8 @@ namespace ed {
 		for (const auto& entry : std::filesystem::directory_iterator(pluginsDirLoc)) {
 			if (entry.is_directory()) {
 				std::string pdir = entry.path().filename().string();
+
+				Logger::Get().Log("Loading \"" + pdir + "\" plugin.");
 
 #if defined(__linux__) || defined(__unix__) || defined(__APPLE__)
 				void* procDLL = dlopen((pluginsDirLoc + pdir + "/plugin.so").c_str(), RTLD_NOW);
@@ -195,7 +193,10 @@ namespace ed {
 				};
 				plugin->AddMessage = [](void* messages, plugin::MessageType mtype, const char* group, const char* txt, int ln) {
 					MessageStack* msgs = (MessageStack*)messages;
-					msgs->Add((MessageStack::Type)mtype, group, txt, ln);
+					std::string groupStr = "";
+					if (group != nullptr)
+						groupStr = std::string(group);
+					msgs->Add((MessageStack::Type)mtype, groupStr, txt, ln);
 				};
 				plugin->CreateRenderTexture = [](void* objects, const char* name) -> bool {
 					ObjectManager* objs = (ObjectManager*)objects;
@@ -207,11 +208,11 @@ namespace ed {
 				};
 				plugin->ResizeRenderTexture = [](void* objects, const char* name, int width, int height) {
 					ObjectManager* objs = (ObjectManager*)objects;
-					objs->ResizeRenderTexture(name, glm::ivec2(width, height));
+					objs->ResizeRenderTexture(objs->Get(name), glm::ivec2(width, height));
 				};
 				plugin->ResizeImage = [](void* objects, const char* name, int width, int height) {
 					ObjectManager* objs = (ObjectManager*)objects;
-					objs->ResizeImage(name, glm::ivec2(width, height));
+					objs->ResizeImage(objs->Get(name), glm::ivec2(width, height));
 				};
 				plugin->ExistsObject = [](void* objects, const char* name) -> bool {
 					ObjectManager* objs = (ObjectManager*)objects;
@@ -357,7 +358,7 @@ namespace ed {
 					msgs->ClearGroup(group);
 				};
 				plugin->Log = [](const char* msg, bool error, const char* file, int line) {
-					printf(msg);
+					printf("%s\n", msg);
 					//ed::Logger::Get().Log(msg, error, file, line);
 				};
 				plugin->GetObjectCount = [](void* objects) -> int {
@@ -366,33 +367,24 @@ namespace ed {
 				};
 				plugin->GetObjectName = [](void* objects, int index) -> const char* {
 					ObjectManager* obj = (ObjectManager*)objects;
-					return obj->GetObjects()[index].c_str();
+					return obj->GetObjects()[index]->Name.c_str();
 				};
 				plugin->IsTexture = [](void* objects, const char* name) -> bool {
 					ObjectManager* obj = (ObjectManager*)objects;
-					const auto& itemList = obj->GetItemDataList();
-					const auto& itemNames = obj->GetObjects();
-					int nameIndex = 0;
-
-					for (const auto& item : itemList) {
-						if (itemNames[nameIndex] == name)
-							return item->IsTexture;
-						nameIndex++;
-					}
-
-					return false;
+					
+					return obj->Get(name)->Type == ObjectType::Texture;
 				};
 				plugin->GetTexture = [](void* objects, const char* name) -> unsigned int {
 					ObjectManager* obj = (ObjectManager*)objects;
-					return obj->GetTexture(name);
+					return obj->Get(name)->Texture;
 				};
 				plugin->GetFlippedTexture = [](void* objects, const char* name) -> unsigned int {
 					ObjectManager* obj = (ObjectManager*)objects;
-					return obj->GetFlippedTexture(name);
+					return obj->Get(name)->FlippedTexture;
 				};
 				plugin->GetTextureSize = [](void* objects, const char* name, int& w, int& h) {
 					ObjectManager* obj = (ObjectManager*)objects;
-					glm::ivec2 tsize = obj->GetTextureSize(name);
+					glm::ivec2 tsize = obj->Get(name)->TextureSize;
 					w = tsize.x;
 					h = tsize.y;
 				};
@@ -871,27 +863,23 @@ namespace ed {
 				};
 				plugin->IsRenderTexture = [](void* objects, const char* name) -> bool {
 					ObjectManager* obj = (ObjectManager*)objects;
-					const auto& itemList = obj->GetItemDataList();
-					const auto& itemNames = obj->GetObjects();
-					int nameIndex = 0;
+					ObjectManagerItem* item = obj->Get(name);
 
-					for (const auto& item : itemList) {
-						if (itemNames[nameIndex] == name)
-							return item->RT != nullptr;
-						nameIndex++;
-					}
+					if (item && item->RT != nullptr)
+						return true;
 
 					return false;
 				};
 				plugin->GetRenderTextureSize = [](void* objects, const char* name, int& w, int& h) {
 					ObjectManager* obj = (ObjectManager*)objects;
-					glm::ivec2 tsize = obj->GetRenderTextureSize(name);
+					ObjectManagerItem* item = obj->Get(name);
+					glm::ivec2 tsize = obj->GetRenderTextureSize(item);
 					w = tsize.x;
 					h = tsize.y;
 				};
 				plugin->GetDepthTexture = [](void* objects, const char* name) -> unsigned int {
 					ObjectManager* obj = (ObjectManager*)objects;
-					return obj->GetRenderTexture(name)->DepthStencilBuffer;
+					return obj->Get(name)->RT->DepthStencilBuffer;
 				};
 				plugin->ScaleSize = [](float size) -> float {
 					return Settings::Instance().CalculateSize(size);
@@ -1024,13 +1012,13 @@ namespace ed {
 	}
 	void PluginManager::Destroy()
 	{
-		std::string settingsFileLoc = "data/plugin_settings.ini";
-		if (!ed::Settings::Instance().LinuxHomeDirectory.empty())
-			settingsFileLoc = ed::Settings::Instance().LinuxHomeDirectory + "data/plugin_settings.ini";
+		std::string settingsFileLoc = ed::Settings::Instance().ConvertPath("data/plugin_settings.ini");
 
 		std::ofstream ini(settingsFileLoc);
 
 		for (int i = 0; i < m_plugins.size(); i++) {
+			Logger::Get().Log("Destroying \"" + m_names[i] + "\" plugin.");
+
 			int optc = m_plugins[i]->Options_GetCount();
 			if (optc) {
 				ini << "[" << m_names[i] << "]" << std::endl;
@@ -1098,9 +1086,16 @@ namespace ed {
 
 	IPlugin1* PluginManager::GetPlugin(const std::string& plugin)
 	{
-		for (int i = 0; i < m_names.size(); i++)
-			if (m_names[i] == plugin)
+		std::string pluginLower = plugin;
+		std::transform(pluginLower.begin(), pluginLower.end(), pluginLower.begin(), ::tolower);
+
+		for (int i = 0; i < m_names.size(); i++) {
+			std::string nameLower = m_names[i];
+			std::transform(nameLower.begin(), nameLower.end(), nameLower.begin(), ::tolower);
+
+			if (nameLower == pluginLower)
 				return m_plugins[i];
+		}
 
 		return nullptr;
 	}

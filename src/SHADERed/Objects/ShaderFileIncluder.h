@@ -42,14 +42,15 @@
 #include <vector>
 
 #include <glslang/Public/ShaderLang.h>
+#include <SHADERed/Objects/ProjectParser.h>
 
 namespace ed {
 	// Default include class for normal include convention of search backward
 	// through the stack of active include paths (for nested includes).
 	// Can be overridden to customize.
-	class HLSLFileIncluder : public glslang::TShader::Includer {
+	class ShaderFileIncluder : public glslang::TShader::Includer {
 	public:
-		HLSLFileIncluder()
+		ShaderFileIncluder()
 				: externalLocalDirectoryCount(0)
 		{
 		}
@@ -88,7 +89,9 @@ namespace ed {
 			}
 		}
 
-		virtual ~HLSLFileIncluder() override { }
+		virtual ~ShaderFileIncluder() override { }
+
+		ProjectParser* ProjectHandle;
 
 	protected:
 		typedef char tUserDataElement;
@@ -99,6 +102,9 @@ namespace ed {
 		// directories and the nominal name of the header.
 		virtual IncludeResult* readLocalPath(const char* headerName, const char* includerName, int depth)
 		{
+			if (ProjectHandle == nullptr)
+				return nullptr;
+
 			// Discard popped include directories, and
 			// initialize when at parse-time first level.
 			directoryStack.resize(depth + externalLocalDirectoryCount);
@@ -109,7 +115,7 @@ namespace ed {
 			for (auto it = directoryStack.rbegin(); it != directoryStack.rend(); ++it) {
 				std::string path = *it + '/' + headerName;
 				std::replace(path.begin(), path.end(), '\\', '/');
-				std::ifstream file(path, std::ios_base::binary | std::ios_base::ate);
+				std::ifstream file(ProjectHandle->GetProjectPath(path), std::ios_base::binary | std::ios_base::ate);
 				if (file) {
 					directoryStack.push_back(getDirectory(path));
 					return newIncludeResult(path, file, (int)file.tellg());

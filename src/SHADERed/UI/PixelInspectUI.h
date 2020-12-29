@@ -14,6 +14,8 @@ namespace ed {
 		virtual void OnEvent(const SDL_Event& e);
 		virtual void Update(float delta);
 
+		void StartDebugging(TextEditor* editor, PixelInformation* pixel);
+
 	private:
 		std::string m_cacheExpression;
 		std::string m_cacheValue;
@@ -22,5 +24,8 @@ namespace ed {
 		glm::vec4 m_cacheColor;
 
 		CubemapPreview m_cubePrev;
+
+		std::vector<float> m_pixelHeights;
+		std::vector<float> m_suggestionHeights;
 	};
 }

@@ -29,7 +29,6 @@ void main()
 
 
 namespace ed {
-
 	void DebugDrawPrimitives(int& vertexStart, int vertexCount, int maxVertexCount, int vertexStrip, GLuint topology, GLuint varLoc, bool instanced, int instanceCount, bool useIndices = false, int vbase = 0)
 	{
 		int actualVertexCount = vertexCount;
@@ -152,10 +151,10 @@ namespace ed {
 			glBindTexture(GL_TEXTURE_2D_MULTISAMPLE, 0);
 
 			// update
-			std::vector<std::string> objs = m_objects->GetObjects();
+			std::vector<ObjectManagerItem*>& objs = m_objects->GetObjects();
 			for (int i = 0; i < objs.size(); i++) {
-				if (m_objects->IsRenderTexture(objs[i])) {
-					ed::RenderTextureObject* rtObj = m_objects->GetRenderTexture(m_objects->GetTexture(objs[i]));
+				if (objs[i]->Type == ObjectType::RenderTexture) {
+					ed::RenderTextureObject* rtObj = objs[i]->RT;
 					if (rtObj != nullptr && rtObj->FixedSize.x == -1)
 						m_objects->ResizeRenderTexture(objs[i], rtObj->CalculateSize(width, height));
 				}
@@ -219,7 +218,7 @@ namespace ed {
 					GLuint rt = data->RenderTextures[i];
 
 					if (rt != m_rtColor) {
-						ed::RenderTextureObject* rtObject = m_objects->GetRenderTexture(rt);
+						ed::RenderTextureObject* rtObject = m_objects->GetByTextureID(rt)->RT;
 
 						rtSize = rtObject->CalculateSize(width, height);
 
@@ -255,13 +254,15 @@ namespace ed {
 
 				// bind shader resource views
 				for (int j = 0; j < srvs.size(); j++) {
+					ObjectManagerItem* srvData = m_objects->GetByTextureID(srvs[j]);
+
 					glActiveTexture(GL_TEXTURE0 + j);
-					if (m_objects->IsCubeMap(srvs[j]))
+					if (srvData->Type == ObjectType::CubeMap)
 						glBindTexture(GL_TEXTURE_CUBE_MAP, srvs[j]);
-					else if (m_objects->IsImage3D(srvs[j]))
+					else if (srvData->Type == ObjectType::Image3D)
 						glBindTexture(GL_TEXTURE_3D, srvs[j]);
-					else if (m_objects->IsPluginObject(srvs[j])) {
-						PluginObject* pobj = m_objects->GetPluginObject(srvs[j]);
+					else if (srvData->Type == ObjectType::PluginObject) {
+						PluginObject* pobj = srvData->Plugin;
 						pobj->Owner->Object_Bind(pobj->Type, pobj->Data, pobj->ID);
 					} else
 						glBindTexture(GL_TEXTURE_2D, srvs[j]);
@@ -456,15 +457,20 @@ namespace ed {
 
 				// bind shaders
 				glUseProgram(m_shaders[i]);
-
+				
 				// bind shader resource views
 				for (int j = 0; j < srvs.size(); j++) {
+					ObjectManagerItem* srvData = m_objects->GetByTextureID(srvs[j]);
+
 					glActiveTexture(GL_TEXTURE0 + j);
-					if (m_objects->IsCubeMap(srvs[j]))
+					if (srvData->Type == ObjectType::CubeMap)
 						glBindTexture(GL_TEXTURE_CUBE_MAP, srvs[j]);
-					else if (m_objects->IsImage3D(srvs[j]))
+					else if (srvData->Type == ObjectType::Image3D)
 						glBindTexture(GL_TEXTURE_3D, srvs[j]);
-					else
+					else if (srvData->Type == ObjectType::PluginObject) {
+						PluginObject* pobj = srvData->Plugin;
+						pobj->Owner->Object_Bind(pobj->Type, pobj->Data, pobj->ID);
+					} else
 						glBindTexture(GL_TEXTURE_2D, srvs[j]);
 
 					if (ShaderCompiler::GetShaderLanguageFromExtension(data->Path) == ShaderLanguage::GLSL)
@@ -477,14 +483,18 @@ namespace ed {
 					glBindBufferBase(GL_SHADER_STORAGE_BUFFER, j, 0);
 
 				for (int j = 0; j < ubos.size(); j++) {
-					if (m_objects->IsImage(ubos[j])) {
-						ImageObject* iobj = m_objects->GetImage(m_objects->GetImageNameByID(ubos[j])); // TODO: GetImageByID
+					ObjectManagerItem* uboData = m_objects->GetByTextureID(ubos[j]);
+					if (uboData == nullptr)
+						uboData = m_objects->GetByBufferID(ubos[j]);
+
+					if (uboData->Type == ObjectType::Image) {
+						ImageObject* iobj = uboData->Image;
 						glBindImageTexture(j, ubos[j], 0, GL_FALSE, 0, GL_WRITE_ONLY | GL_READ_ONLY, iobj->Format);
-					} else if (m_objects->IsImage3D(ubos[j])) {
-						Image3DObject* iobj = m_objects->GetImage3D(m_objects->GetImage3DNameByID(ubos[j]));
+					} else if (uboData->Type == ObjectType::Image3D) {
+						Image3DObject* iobj = uboData->Image3D;
 						glBindImageTexture(j, ubos[j], 0, GL_TRUE, 0, GL_WRITE_ONLY | GL_READ_ONLY, iobj->Format);
-					} else if (m_objects->IsPluginObject(ubos[j])) {
-						PluginObject* pobj = m_objects->GetPluginObject(ubos[j]);
+					} else if (uboData->Type == ObjectType::PluginObject) {
+						PluginObject* pobj = uboData->Plugin;
 						pobj->Owner->Object_Bind(pobj->Type, pobj->Data, pobj->ID);
 					} else
 						glBindBufferBase(GL_SHADER_STORAGE_BUFFER, j, ubos[j]);
@@ -508,13 +518,15 @@ namespace ed {
 
 				// bind shader resource views
 				for (int j = 0; j < srvs.size(); j++) {
+					ObjectManagerItem* srvData = m_objects->GetByTextureID(srvs[j]);
+
 					glActiveTexture(GL_TEXTURE0 + j);
-					if (m_objects->IsCubeMap(srvs[j]))
+					if (srvData->Type == ObjectType::CubeMap)
 						glBindTexture(GL_TEXTURE_CUBE_MAP, srvs[j]);
-					else if (m_objects->IsImage3D(srvs[j]))
+					else if (srvData->Type == ObjectType::Image3D)
 						glBindTexture(GL_TEXTURE_3D, srvs[j]);
-					else if (m_objects->IsPluginObject(srvs[j])) {
-						PluginObject* pobj = m_objects->GetPluginObject(srvs[j]);
+					else if (srvData->Type == ObjectType::PluginObject) {
+						PluginObject* pobj = srvData->Plugin;
 						pobj->Owner->Object_Bind(pobj->Type, pobj->Data, pobj->ID);
 					} else
 						glBindTexture(GL_TEXTURE_2D, srvs[j]);
@@ -524,10 +536,8 @@ namespace ed {
 				}
 
 				// bind buffers
-				for (int j = 0; j < ubos.size(); j++) {
-					if (m_objects->IsBuffer(m_objects->GetBufferNameByID(ubos[j])))
-						glBindBufferBase(GL_SHADER_STORAGE_BUFFER, j, ubos[j]);
-				}
+				for (int j = 0; j < ubos.size(); j++)
+					glBindBufferBase(GL_SHADER_STORAGE_BUFFER, j, ubos[j]);
 
 				// bind variables
 				data->Variables.Bind();
@@ -611,7 +621,7 @@ namespace ed {
 				GLuint rt = vertexPass->RenderTextures[i];
 
 				if (rt != m_rtColor) {
-					ed::RenderTextureObject* rtObject = m_objects->GetRenderTexture(rt);
+					ed::RenderTextureObject* rtObject = m_objects->GetByTextureID(rt)->RT;
 					rtSize = rtObject->CalculateSize(m_lastSize.x, m_lastSize.y);
 				}
 
@@ -626,13 +636,15 @@ namespace ed {
 
 			// bind shader resource views
 			for (int j = 0; j < srvs.size(); j++) {
+				ObjectManagerItem* srvData = m_objects->GetByTextureID(srvs[j]);
+
 				glActiveTexture(GL_TEXTURE0 + j);
-				if (m_objects->IsCubeMap(srvs[j]))
+				if (srvData->Type == ObjectType::CubeMap)
 					glBindTexture(GL_TEXTURE_CUBE_MAP, srvs[j]);
-				else if (m_objects->IsImage3D(srvs[j]))
+				else if (srvData->Type == ObjectType::Image3D)
 					glBindTexture(GL_TEXTURE_3D, srvs[j]);
-				else if (m_objects->IsPluginObject(srvs[j])) {
-					PluginObject* pobj = m_objects->GetPluginObject(srvs[j]);
+				else if (srvData->Type == ObjectType::PluginObject) {
+					PluginObject* pobj = srvData->Plugin;
 					pobj->Owner->Object_Bind(pobj->Type, pobj->Data, pobj->ID);
 				} else
 					glBindTexture(GL_TEXTURE_2D, srvs[j]);
@@ -680,11 +692,16 @@ namespace ed {
 					// bind variables
 					vertexPass->Variables.Bind(item);
 
-					int singlePrimitiveVCount = TOPOLOGY_SINGLE_VERTEX_COUNT[geoData->Topology];
+					int topologySelection = 0;
+					for (; topologySelection < (sizeof(TOPOLOGY_ITEM_VALUES) / sizeof(*TOPOLOGY_ITEM_VALUES)); topologySelection++)
+						if (TOPOLOGY_ITEM_VALUES[topologySelection] == geoData->Topology)
+							break;
+
+					int singlePrimitiveVCount = TOPOLOGY_SINGLE_VERTEX_COUNT[topologySelection];
 					int vertexStart = (group >= 0) * group;
 					int maxVertexCount = (group < 0 ? eng::GeometryFactory::VertexCount[geoData->Type] : (vertexStart + DEBUG_PRIMITIVE_GROUP * singlePrimitiveVCount));
 					int vertexCount = (group < 0 ? DEBUG_PRIMITIVE_GROUP : 1) * singlePrimitiveVCount;
-					int vertexStrip = (group >= 0) * TOPOLOGY_IS_STRIP[geoData->Topology];
+					int vertexStrip = (group >= 0) * TOPOLOGY_IS_STRIP[topologySelection];
 
 					maxVertexCount = std::min<int>(maxVertexCount, eng::GeometryFactory::VertexCount[geoData->Type]);
 
@@ -739,11 +756,16 @@ namespace ed {
 						// bind variables
 						vertexPass->Variables.Bind(item);
 
-						int singlePrimitiveVCount = TOPOLOGY_SINGLE_VERTEX_COUNT[vbData->Topology];
+						int topologySelection = 0;
+						for (; topologySelection < (sizeof(TOPOLOGY_ITEM_VALUES) / sizeof(*TOPOLOGY_ITEM_VALUES)); topologySelection++)
+							if (TOPOLOGY_ITEM_VALUES[topologySelection] == vbData->Topology)
+								break;
+
+						int singlePrimitiveVCount = TOPOLOGY_SINGLE_VERTEX_COUNT[topologySelection];
 						int vertexStart = (group >= 0) * group;
 						int maxVertexCount = (group < 0 ? actualMaxVertexCount : (vertexStart + DEBUG_PRIMITIVE_GROUP * singlePrimitiveVCount));
 						int vertexCount = (group < 0 ? DEBUG_PRIMITIVE_GROUP : 1) * singlePrimitiveVCount;
-						int vertexStrip = (group >= 0) * TOPOLOGY_IS_STRIP[vbData->Topology];
+						int vertexStrip = (group >= 0) * TOPOLOGY_IS_STRIP[topologySelection];
 
 						maxVertexCount = std::min<int>(maxVertexCount, actualMaxVertexCount);
 
@@ -850,8 +872,8 @@ namespace ed {
 				GLuint rt = vertexPass->RenderTextures[i];
 
 				if (rt != m_rtColor) {
-					ed::RenderTextureObject* rtObject = m_objects->GetRenderTexture(rt);
-					rtSize = rtObject->CalculateSize(m_lastSize.x, m_lastSize.y);
+					ObjectManagerItem* rtObject = m_objects->GetByTextureID(rt);
+					rtSize = rtObject->RT->CalculateSize(m_lastSize.x, m_lastSize.y);
 				}
 
 				glClearBufferfv(GL_COLOR, i, glm::value_ptr(glm::vec4(0.0f)));
@@ -865,13 +887,15 @@ namespace ed {
 
 			// bind shader resource views
 			for (int j = 0; j < srvs.size(); j++) {
+				ObjectManagerItem* srvData = m_objects->GetByTextureID(srvs[j]);
+
 				glActiveTexture(GL_TEXTURE0 + j);
-				if (m_objects->IsCubeMap(srvs[j]))
+				if (srvData->Type == ObjectType::CubeMap)
 					glBindTexture(GL_TEXTURE_CUBE_MAP, srvs[j]);
-				else if (m_objects->IsImage3D(srvs[j]))
+				else if (srvData->Type == ObjectType::Image3D)
 					glBindTexture(GL_TEXTURE_3D, srvs[j]);
-				else if (m_objects->IsPluginObject(srvs[j])) {
-					PluginObject* pobj = m_objects->GetPluginObject(srvs[j]);
+				else if (srvData->Type == ObjectType::PluginObject) {
+					PluginObject* pobj = srvData->Plugin;
 					pobj->Owner->Object_Bind(pobj->Type, pobj->Data, pobj->ID);
 				} else
 					glBindTexture(GL_TEXTURE_2D, srvs[j]);
@@ -1327,7 +1351,6 @@ namespace ed {
 							if (vsLang == ShaderLanguage::Plugin)
 								vsContent = m_pluginProcessGLSL(shader->VSPath, vsContent.c_str());
 						}
-
 
 
 						GLuint vs = gl::CompileShader(GL_VERTEX_SHADER, vsContent.c_str());
@@ -1830,7 +1853,7 @@ namespace ed {
 					data->Variables.UpdateTextureList(psContent);
 					ps = gl::CompileShader(GL_FRAGMENT_SHADER, psContent.c_str());
 					psCompiled &= gl::CheckShaderCompilationStatus(ps);
-					
+
 					// geometry shader
 					lineBias = 0;
 					bool gsCompiled = true;
@@ -2124,6 +2147,8 @@ namespace ed {
 	
 	const char* RenderEngine::m_pluginProcessGLSL(const char* path, const char* src)
 	{
+		Logger::Get().Log("Plugin is processing GLSL");
+
 		bool ret = false;
 
 		int plLang = 0;
@@ -2133,6 +2158,8 @@ namespace ed {
 	}
 	bool RenderEngine::m_pluginCompileToSpirv(std::vector<GLuint>& spvvec, const std::string& path, const std::string& entry, plugin::ShaderStage stage, ed::ShaderMacro* macros, size_t macroCount, const std::string& actualSource)
 	{
+		Logger::Get().Log("Plugin is compiling the shader to SPIR-V");
+
 		bool ret = false;
 
 		int plLang = 0;
@@ -2225,8 +2252,10 @@ namespace ed {
 			return;
 
 		GLuint lastID = pass->RenderTextures[pass->RTCount - 1];
-		GLuint depthID = lastID == m_rtColor ? m_rtDepth : m_objects->GetRenderTexture(lastID)->DepthStencilBuffer;
-		GLuint depthMSID = lastID == m_rtColor ? m_rtDepthMS : m_objects->GetRenderTexture(lastID)->DepthStencilBufferMS;
+		ObjectManagerItem* lastData = m_objects->GetByTextureID(lastID);
+
+		GLuint depthID = lastID == m_rtColor ? m_rtDepth : lastData->RT->DepthStencilBuffer;
+		GLuint depthMSID = lastID == m_rtColor ? m_rtDepthMS : lastData->RT->DepthStencilBufferMS;
 
 		pass->DepthTexture = depthID;
 
@@ -2262,7 +2291,7 @@ namespace ed {
 			if (texID == m_rtColor)
 				texID = m_rtColorMS;
 			else
-				texID = m_objects->GetRenderTexture(texID)->BufferMS;
+				texID = m_objects->GetByTextureID(texID)->RT->BufferMS;
 
 			// attach
 			glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0 + i, GL_TEXTURE_2D_MULTISAMPLE, texID, 0);

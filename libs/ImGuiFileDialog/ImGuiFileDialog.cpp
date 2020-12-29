@@ -621,12 +621,21 @@ namespace igfd
 						{
 							if (itPathDecomp != m_CurrentPath_Decomposition.begin())
 								ImGui::SameLine();
+
+							bool shouldBreak = false;
 							if (ImGui::Button((*itPathDecomp + "##pelem" + std::to_string(pathElementIndex)).c_str()))
 							{
 								ComposeNewPath(itPathDecomp);
 								pathClick = true;
-								break;
+								shouldBreak = true;
 							}
+							if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) {
+								strcpy(m_PathInput, m_CurrentPath.c_str());
+								m_IsPathInputMode = true;
+								shouldBreak = true;
+							}
+							if (shouldBreak) break;
+
 
 							if (pathElementIndex == m_CurrentPath_Decomposition.size() - 1 && *itPathDecomp != "/") {
 								ImGui::SameLine();
@@ -903,9 +912,27 @@ namespace igfd
 						ImGui::PushItemFlag(ImGuiItemFlags_Disabled, true);
 						ImGui::PushStyleVar(ImGuiStyleVar_Alpha, ImGui::GetStyle().Alpha * 0.5f);
 					}
-					if (ImGui::Button("OK##DialogConfirm")) {
+					if (ImGui::Button("OK##DialogConfirm", ImVec2(70, 0))) {
 						if (FileNameBuffer[0] != '\0' || dlg_filters == nullptr)
 						{
+							bool shouldCheck = false;
+							for (int i = 0; i < strlen(FileNameBuffer); i++) {
+								if (FileNameBuffer[i] == '/' || FileNameBuffer[i] == '\\') {
+									shouldCheck = true;
+									break;
+								}
+							}
+
+							if (shouldCheck) {
+								std::filesystem::path filePath(FileNameBuffer);
+								if (filePath.is_absolute())
+									m_CurrentPath = filePath.parent_path().string();
+								else
+									m_CurrentPath = (std::filesystem::path(m_CurrentPath) / filePath).string();
+
+								strcpy(FileNameBuffer, filePath.filename().string().c_str());
+							}
+
 							IsOk = true;
 							res = true;
 						}
@@ -1205,6 +1232,9 @@ namespace igfd
 
 	void ImGuiFileDialog::SetPath(const std::string& vPath)
 	{
+		SearchBuffer[0] = 0;
+		searchTag = SearchBuffer; // reset search
+
 		m_ShowDrives = false;
 		m_CurrentPath = vPath;
 		m_FileList.clear();

@@ -63,7 +63,7 @@ namespace ed {
 			return;
 
 		// info
-		const std::vector<ObjectManagerItem*>& objs = Objects.GetItemDataList();
+		const std::vector<ObjectManagerItem*>& objs = Objects.GetObjects();
 		glm::ivec2 previewSize = Renderer.GetLastRenderSize();
 		glm::ivec2 maxRTSize = previewSize;
 		GLuint previewTexture = Renderer.GetTexture();
@@ -78,7 +78,7 @@ namespace ed {
 		// get max RT size
 		for (int i = 0; i < objs.size(); i++) {
 			if (objs[i]->RT != nullptr) {
-				glm::ivec2 rtSize = Objects.GetRenderTextureSize(objs[i]->RT->Name);
+				glm::ivec2 rtSize = Objects.GetRenderTextureSize(objs[i]);
 				if (rtSize.x > maxRTSize.x)
 					maxRTSize.x = rtSize.x;
 				if (rtSize.y > maxRTSize.y)
@@ -93,9 +93,9 @@ namespace ed {
 
 		// rt pixel colors
 		for (int i = 0; i < objs.size(); i++) {
-			if (objs[i]->RT != nullptr) {
+			if (objs[i]->Type == ObjectType::RenderTexture) {
 				GLuint tex = objs[i]->Texture;
-				glm::ivec2 rtSize = Objects.GetRenderTextureSize(objs[i]->RT->Name);
+				glm::ivec2 rtSize = Objects.GetRenderTextureSize(objs[i]);
 
 				pixelColors[tex] = getPixelColor(tex, mainPixelData, r.x * rtSize.x, r.y * rtSize.y, rtSize.x);
 			}
@@ -111,7 +111,7 @@ namespace ed {
 		for (int i = 0; i < objs.size(); i++) {
 			if (objs[i]->RT != nullptr) {
 				GLuint tex = objs[i]->Texture;
-				glm::ivec2 rtSize = Objects.GetRenderTextureSize(objs[i]->RT->Name);
+				glm::ivec2 rtSize = Objects.GetRenderTextureSize(objs[i]);
 
 				pipelineItems[tex] = Renderer.GetPipelineItemByDebugID(0x00FFFFFF & getPixelID(tex, mainPixelData, r.x * rtSize.x, r.y * rtSize.y, rtSize.x));
 			}
@@ -122,12 +122,12 @@ namespace ed {
 			if (k.second.second == nullptr)
 				continue;
 
-			std::string rtName = Objects.GetItemNameByTextureID(k.first);
+			ObjectManagerItem* rtItem = Objects.GetByTextureID(k.first);
 			std::string objName = k.second.second->Name;
 
 			glm::ivec2 rtSize = previewSize;
-			if (!rtName.empty())
-				rtSize = Objects.GetRenderTextureSize(rtName);
+			if (rtItem != nullptr)
+				rtSize = Objects.GetRenderTextureSize(rtItem);
 			x = r.x * rtSize.x;
 			y = r.y * rtSize.y;
 
@@ -137,13 +137,24 @@ namespace ed {
 				pipe::GeometryItem* geoData = ((pipe::GeometryItem*)k.second.second->Data);
 
 				objTopology = geoData->Topology;
-				vertexCount = TOPOLOGY_SINGLE_VERTEX_COUNT[objTopology];
+
+				int topologySelection = 0;
+				for (; topologySelection < (sizeof(TOPOLOGY_ITEM_VALUES) / sizeof(*TOPOLOGY_ITEM_VALUES)); topologySelection++)
+					if (TOPOLOGY_ITEM_VALUES[topologySelection] == objTopology)
+						break;
+				vertexCount = TOPOLOGY_SINGLE_VERTEX_COUNT[topologySelection];
+
 				instanceBuffer = (BufferObject*)geoData->InstanceBuffer;
 			} else if (k.second.second->Type == ed::PipelineItem::ItemType::VertexBuffer) {
 				pipe::VertexBuffer* bufData = ((pipe::VertexBuffer*)k.second.second->Data);
 
 				objTopology = bufData->Topology;
-				vertexCount = TOPOLOGY_SINGLE_VERTEX_COUNT[objTopology];
+
+				int topologySelection = 0;
+				for (; topologySelection < (sizeof(TOPOLOGY_ITEM_VALUES) / sizeof(*TOPOLOGY_ITEM_VALUES)); topologySelection++)
+					if (TOPOLOGY_ITEM_VALUES[topologySelection] == objTopology)
+						break;
+				vertexCount = TOPOLOGY_SINGLE_VERTEX_COUNT[topologySelection];
 			} else if (k.second.second->Type == ed::PipelineItem::ItemType::Model) {
 				pipe::Model* objData = ((pipe::Model*)k.second.second->Data);
 				instanceBuffer = (BufferObject*)objData->InstanceBuffer;
@@ -151,7 +162,12 @@ namespace ed {
 				pipe::PluginItemData* objData = ((pipe::PluginItemData*)k.second.second->Data);
 
 				objTopology = objData->Owner->PipelineItem_GetTopology(objData->Type, objData->PluginData);
-				vertexCount = TOPOLOGY_SINGLE_VERTEX_COUNT[objTopology];
+				
+				int topologySelection = 0;
+				for (; topologySelection < (sizeof(TOPOLOGY_ITEM_VALUES) / sizeof(*TOPOLOGY_ITEM_VALUES)); topologySelection++)
+					if (TOPOLOGY_ITEM_VALUES[topologySelection] == objTopology)
+						break;
+				vertexCount = TOPOLOGY_SINGLE_VERTEX_COUNT[topologySelection];
 			}
 
 			int rtIndex = 0;
@@ -171,13 +187,17 @@ namespace ed {
 			pxInfo.Object = k.second.second;
 			pxInfo.Pass = k.second.first;
 			pxInfo.RelativeCoordinate = r;
-			pxInfo.RenderTexture = rtName;
+			pxInfo.RenderTexture = rtItem;
 			pxInfo.RenderTextureSize = rtSize;
 			pxInfo.RenderTextureIndex = rtIndex;
 			pxInfo.VertexID = 0;
 			pxInfo.VertexCount = vertexCount;
 			pxInfo.InTopology = pxInfo.OutTopology = objTopology;
 			pxInfo.InstanceBuffer = instanceBuffer;
+			pxInfo.GeometryShaderUsed = false;
+
+			if (pxInfo.Pass && pxInfo.Pass->Type == PipelineItem::ItemType::ShaderPass)
+				pxInfo.GeometryShaderUsed = ((pipe::ShaderPass*)pxInfo.Pass->Data)->GSUsed;
 
 			if (Settings::Instance().Debug.AutoFetch)
 				FetchPixel(pxInfo);
@@ -202,19 +222,81 @@ namespace ed {
 		// return old info
 		Renderer.Render(false, pixel.Pass); // render everything up to the pixel.Pass object
 
+		// run vertex shader
 		Debugger.PrepareVertexShader(pixel.Pass, pixel.Object);
 		for (int i = 0; i < pixel.VertexCount; i++) {
-			Debugger.SetVertexShaderInput(pixel.Pass, pixel.Vertex[i], pixel.VertexID + i, pixel.InstanceID, (BufferObject*)pixel.InstanceBuffer);
-			pixel.glPosition[i] = Debugger.ExecuteVertexShader();
+			Debugger.SetVertexShaderInput(pixel, i);
+			pixel.VertexShaderPosition[i] = Debugger.ExecuteVertexShader();
 			Debugger.CopyVertexShaderOutput(pixel, i);
 		}
 
+		memcpy(pixel.FinalPosition, pixel.VertexShaderPosition, sizeof(glm::vec4) * 3);
+
+		// run the geometry shader if needed
+		if (pixel.GeometryShaderUsed) {
+			Debugger.PrepareGeometryShader(pixel.Pass, pixel.Object);
+			Debugger.SetGeometryShaderInput(pixel);
+			Debugger.ExecuteGeometryShader();
+		}
+
+		// run pixel shader
 		Debugger.PreparePixelShader(pixel.Pass, pixel.Object);
 		Debugger.SetPixelShaderInput(pixel);
 		pixel.DebuggerColor = Debugger.ExecutePixelShader(pixel.Coordinate.x, pixel.Coordinate.y, pixel.RenderTextureIndex);
 		pixel.Discarded = Debugger.GetVM()->discarded;
 
 		pixel.Fetched = true;
+
+		// compute shader suggestion for instanced objects
+		if (pixel.InstanceBuffer) {
+			BufferObject* buf = (BufferObject*)pixel.InstanceBuffer;
+			ObjectManagerItem* bufOwner = Objects.GetByBufferID(buf->ID);
+			
+			for (auto& item : Pipeline.GetList()) {
+				if (Objects.IsUniformBound(bufOwner, item) != -1) {
+					if (item->Type == PipelineItem::ItemType::ComputePass) {
+						DebuggerSuggestion suggestion;
+						suggestion.Type = DebuggerSuggestion::SuggestionType::ComputeShader;
+						suggestion.Item = item;
+						suggestion.Thread = glm::ivec3(pixel.InstanceID, 0, 0);
+						Debugger.AddSuggestion(suggestion);
+					}
+				}
+			}
+		}
+
+		// compute shader suggestion for VertexBuffer objects
+		if (pixel.Object->Type == PipelineItem::ItemType::VertexBuffer) {
+			pipe::VertexBuffer* vertBufferItem = (pipe::VertexBuffer*)pixel.Object->Data;
+
+			BufferObject* buf = (BufferObject*)vertBufferItem->Buffer;
+
+			if (buf) {
+				ObjectManagerItem* bufOwner = Objects.GetByBufferID(buf->ID);
+			
+				for (auto& item : Pipeline.GetList()) {
+					if (Objects.IsUniformBound(bufOwner, item) != -1) {
+						if (item->Type == PipelineItem::ItemType::ComputePass) {
+							DebuggerSuggestion suggestion;
+							suggestion.Type = DebuggerSuggestion::SuggestionType::ComputeShader;
+							suggestion.Item = item;
+
+							// vertex #1
+							suggestion.Thread = glm::ivec3(pixel.VertexID + 0, 0, 0);
+							Debugger.AddSuggestion(suggestion);
+
+							// vertex #2
+							suggestion.Thread = glm::ivec3(pixel.VertexID + 1, 0, 0);
+							Debugger.AddSuggestion(suggestion);
+
+							// vertex #3
+							suggestion.Thread = glm::ivec3(pixel.VertexID + 2, 0, 0);
+							Debugger.AddSuggestion(suggestion);
+						}
+					}
+				}
+			}
+		}
 	}
 	void InterfaceManager::m_fetchVertices(PixelInformation& pixel)
 	{

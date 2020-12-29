@@ -69,7 +69,7 @@ namespace ed {
 				PropertyUI* props = (PropertyUI*)m_ui->Get(ViewID::Properties);
 				for (int i = 0; i < m_picks.size(); i++) {
 					if (props->CurrentItemName() == m_picks[i]->Name)
-						props->Open(nullptr);
+						props->Close();
 					m_data->Pipeline.Remove(m_picks[i]->Name);
 				}
 				m_picks.clear();
@@ -336,7 +336,7 @@ namespace ed {
 
 		if (paused && m_zoomLastSize != renderer->GetLastRenderSize() &&!m_data->Debugger.IsDebugging()) {
 			renderer->Render(imageSize.x, imageSize.y);
-			pixelList.clear();
+			m_data->Debugger.ClearPixelList();
 		}
 
 		// render the gizmo/bounding box/zoom area if necessary
@@ -591,9 +591,11 @@ namespace ed {
 
 			// WASD key press - first person camera
 			if (fp) {
+				float mult = ImGui::GetIO().KeyShift ? 100.0f : 1.0f;
+
 				ed::FirstPersonCamera* cam = ((ed::FirstPersonCamera*)SystemVariableManager::Instance().GetCamera());
-				cam->MoveUpDown((ImGui::IsKeyDown(SDL_SCANCODE_S) - ImGui::IsKeyDown(SDL_SCANCODE_W)) / 70.0f);
-				cam->MoveLeftRight((ImGui::IsKeyDown(SDL_SCANCODE_D) - ImGui::IsKeyDown(SDL_SCANCODE_A)) / 70.0f);
+				cam->MoveUpDown(((ImGui::IsKeyDown(SDL_SCANCODE_S) - ImGui::IsKeyDown(SDL_SCANCODE_W)) / 70.0f) * mult);
+				cam->MoveLeftRight(((ImGui::IsKeyDown(SDL_SCANCODE_D) - ImGui::IsKeyDown(SDL_SCANCODE_A)) / 70.0f) * mult);
 			}
 		}
 		// else if paused - pixel inspection
@@ -657,7 +659,7 @@ namespace ed {
 			static char pxCoord[32] = { 0 };
 
 			for (int i = 0; i < pixelList.size(); i++) {
-				if (pixelList[i].RenderTexture.empty() && pixelList[i].Fetched) { // we only care about window's pixel info here
+				if (pixelList[i].RenderTexture == nullptr && pixelList[i].Fetched) { // we only care about window's pixel info here
 
 					if (settings.Debug.PrimitiveOutline) {
 						// render the lines
@@ -926,7 +928,7 @@ namespace ed {
 
 	void PreviewUI::m_setupBoundingBox()
 	{
-		Logger::Get().Log("Setting up bounding box...");
+		Logger::Get().Log("Setting up the bounding box");
 
 		// create a shader program for gizmo
 		m_boxShader = gl::CreateShader(&BOX_VS_CODE, &BOX_PS_CODE, "bounding box");
