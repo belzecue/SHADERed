@@ -1,3 +1,59 @@
+[v1.5.4]
++ add ability to step into included files while debugging
++ fix a bug that caused the debugger not to work if the compiler doesn't output function with name "main"
+
+[v1.5.3]
++ add Debug Adapter Protocol
++ fix a bug that would sometimes cause SHADERed to concat two absolute paths
++ fix a bug where "Function Stack" window would display wrong line numbers while debugging HLSL
+
+[v1.5.2]
++ fix a critical bug that would cause SHADERed to not store proper texture paths in project files
++ fix a bug that would cause SHADERed to crash on creating cubemaps
++ fix a bug that caused the geometry shader file dialog to be unresponsive
++ fix a bug that would crash SHADERed when a project file is referencing an texture that doesn't exist
+
+[v1.5.1]
++ add tessellation control shader debugger
++ add --convert command
++ remove BUILD_IMMEDIATE_MODE (immediate mode now works on all systems)
++ fix immediate mode when using HLSL's cbuffer variables
++ fix a bug that would sometimes cause SHADERed to print unhelpful error messages
++ fix a bug in immediate mode that would cause it to crash
++ fix a bug where --disassemble command would output wrong IDs
++ fix a bug in text editor that would sometimes highlight wrong code folding collapse/expand sections
++ fix a bug where search in "Browse online" wouldn't work when searching for themes & plugins
++ fix a bug that doesn't let you close the frame analysis window
++ fix a bug that caused the frame analysis window to stay open after loading another project
++ remove SFML
+
+[v1.5]
++ add "Frame analysis" window
++ add the ability to detect undefined behavior in shaders
++ add global/frame breakpoints
++ add the ability to see variable's value throughout the whole frame
++ add SPIR-V instruction heatmap
++ add "Profiler" window - measure shader execution time
++ add color histogram
++ add pixel history
++ add "Focus mode"
++ add support for .dds textures
++ add Texture3D object
++ add preview for Image3D objects
++ add --disassemble command
+
+[v1.4.4]
++ add tessellation shaders
++ add new file dialog
++ add code folding
++ add the ability to CTRL+Click on keywords, functions, headers... etc in the text editor
++ add "Highlight brackets" option to text editor
++ add PickPosition variable
++ add VertexShaderPosition variable
++ add darkened render texture as background to GeometryOutputUI
++ add the ability to open a shader file by drag and dropping it into the window
++ fix a bug where gizmo and bounding box would still render even when preview is paused
+
 [v1.4.3]
 + add geometry shader debugger
 + add "Auto" window

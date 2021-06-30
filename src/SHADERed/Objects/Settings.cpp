@@ -1,6 +1,6 @@
 #include <SHADERed/Objects/Logger.h>
 #include <SHADERed/Objects/Settings.h>
-#include <inih/INIReader.h>
+#include <misc/INIReader.h>
 
 #include <algorithm>
 #include <fstream>
@@ -15,6 +15,7 @@ namespace ed {
 		General.VSync = true;
 		General.AutoOpenErrorWindow = true;
 		General.Toolbar = false;
+		General.Profiler = false;
 		General.Recovery = false;
 		General.CheckUpdates = true;
 		General.CheckPluginUpdates = true;
@@ -59,6 +60,8 @@ namespace ed {
 		Editor.FunctionDeclarationTooltips = false;
 		Editor.SyntaxHighlighting = true;
 		Editor.ScrollbarMarkers = true;
+		Editor.HighlightBrackets = true;
+		Editor.CodeFolding = true;
 
 		Debug.ShowValuesOnHover = true;
 		Debug.AutoFetch = true;
@@ -98,6 +101,7 @@ namespace ed {
 		General.VSync = ini.GetBoolean("general", "vsync", true);
 		General.AutoOpenErrorWindow = ini.GetBoolean("general", "autoerror", true);
 		General.Toolbar = ini.GetBoolean("general", "toolbar", false);
+		General.Profiler = ini.GetBoolean("general", "profiler", false);
 		General.Recovery = ini.GetBoolean("general", "recovery", false);
 		General.CheckUpdates = ini.GetBoolean("general", "checkupdates", true);
 		General.CheckPluginUpdates = ini.GetBoolean("general", "checkpluginupdates", true);
@@ -143,6 +147,8 @@ namespace ed {
 		Editor.FunctionDeclarationTooltips = ini.GetBoolean("editor", "funcdeclrtooltips", false);
 		Editor.SyntaxHighlighting = ini.GetBoolean("editor", "syntaxhighlighting", true);
 		Editor.ScrollbarMarkers = ini.GetBoolean("editor", "scrollbarmarkers", true);
+		Editor.HighlightBrackets = ini.GetBoolean("editor", "highlightbrackets", true);
+		Editor.CodeFolding = ini.GetBoolean("editor", "codefolding", true);
 
 		Debug.ShowValuesOnHover = ini.GetBoolean("debug", "valuesonhover", true);
 		Debug.AutoFetch = ini.GetBoolean("debug", "autofetch", true);
@@ -160,7 +166,7 @@ namespace ed {
 		Preview.GizmoSnapRotation = ini.GetInteger("preview", "gizmosnaprota", 0);
 		Preview.GizmoSnapTranslation = ini.GetInteger("preview", "gizmosnaptrans", 0);
 		Preview.PropertyPick = ini.GetBoolean("preview", "propertypick", true);
-		Preview.StatusBar = ini.GetBoolean("preview", "statusbar", false);
+		Preview.StatusBar = ini.GetBoolean("preview", "statusbar", true);
 		Preview.FPSLimit = ini.GetInteger("preview", "fpslimit", -1);
 		Preview.ApplyFPSLimitToApp = ini.GetBoolean("preview", "fpslimitwholeapp", false);
 		Preview.LostFocusLimitFPS = ini.GetBoolean("preview", "fpslimitlostfocus", false);
@@ -187,6 +193,7 @@ namespace ed {
 		ini << "vsync=" << General.VSync << std::endl;
 		ini << "autoerror=" << General.AutoOpenErrorWindow << std::endl;
 		ini << "toolbar=" << General.Toolbar << std::endl;
+		ini << "profiler=" << General.Profiler << std::endl;
 		ini << "recovery=" << General.Recovery << std::endl;
 		ini << "checkupdates=" << General.CheckUpdates << std::endl;
 		ini << "checkpluginupdates=" << General.CheckPluginUpdates << std::endl;
@@ -275,6 +282,8 @@ namespace ed {
 		ini << "funcdeclrtooltips=" << Editor.FunctionDeclarationTooltips << std::endl;
 		ini << "syntaxhighlighting=" << Editor.SyntaxHighlighting << std::endl;
 		ini << "scrollbarmarkers=" << Editor.ScrollbarMarkers << std::endl;
+		ini << "highlightbrackets=" << Editor.HighlightBrackets << std::endl;
+		ini << "codefolding" << Editor.CodeFolding << std::endl;
 
 		ini << "[debug]" << std::endl;
 		ini << "valuesonhover=" << Debug.ShowValuesOnHover << std::endl;

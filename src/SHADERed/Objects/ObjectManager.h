@@ -1,7 +1,5 @@
 #pragma once
 #include <SDL2/SDL_surface.h>
-#include <SFML/Audio/Sound.hpp>
-#include <SFML/Audio/SoundBuffer.hpp>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -22,6 +20,7 @@ namespace ed {
 
 		bool CreateRenderTexture(const std::string& name);
 		bool CreateTexture(const std::string& file);
+		bool CreateTexture3D(const std::string& file);
 		bool CreateAudio(const std::string& file);
 		bool CreateCubemap(const std::string& name, const std::string& left, const std::string& top, const std::string& front, const std::string& bottom, const std::string& right, const std::string& back);
 		bool CreateBuffer(const std::string& file);
@@ -114,6 +113,7 @@ namespace ed {
 
 		ed::AudioAnalyzer m_audioAnalyzer;
 		float m_audioTempTexData[ed::AudioAnalyzer::SampleCount * 2];
+		short m_samplesTempBuffer[1024];
 
 		unsigned char m_kbTexture[256 * 3];
 

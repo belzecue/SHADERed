@@ -188,7 +188,7 @@ namespace ed {
 		case ed::SystemShaderVariable::MousePosition: return "sysMousePosition";
 		}
 
-		return "";
+		return "shaderVariable";
 	}
 
 	std::string getVariableValue(ed::ShaderVariable* var)
@@ -411,7 +411,7 @@ namespace ed {
 						std::vector<unsigned int> tempSPV;
 
 						ShaderCompiler::CompileSourceToSPIRV(tempSPV, shdrLanguage, allShaderFiles[i], shdrSource, allShaderTypes[i], allShaderEntries[i], tempMacros, nullptr, nullptr);
-						shdrSource = ShaderCompiler::ConvertToGLSL(tempSPV, shdrLanguage, allShaderTypes[i], false, nullptr);
+						shdrSource = ShaderCompiler::ConvertToGLSL(tempSPV, shdrLanguage, allShaderTypes[i], false, false, nullptr);
 					}
 
 					shadersSrc += "std::string " + getShaderFilename(allShaderFiles[i]) + " = R\"(\n";
@@ -446,7 +446,7 @@ namespace ed {
 						std::vector<unsigned int> tempSPV;
 
 						ShaderCompiler::CompileSourceToSPIRV(tempSPV, shdrLanguage, allShaderFiles[i], shdrSource, allShaderTypes[i], allShaderEntries[i], tempMacros, nullptr, nullptr);
-						shdrSource = ShaderCompiler::ConvertToGLSL(tempSPV, shdrLanguage, allShaderTypes[i], false, nullptr);
+						shdrSource = ShaderCompiler::ConvertToGLSL(tempSPV, shdrLanguage, allShaderTypes[i], false, false, nullptr);
 					}
 
 					std::ofstream shaderWriter(shdrFile);
@@ -686,7 +686,7 @@ namespace ed {
 						renderSrc += indent + "glActiveTexture(GL_TEXTURE0 + " + std::to_string(j) + ");\n";
 						if (itemData->Type == ObjectType::CubeMap)
 							renderSrc += indent + "glBindTexture(GL_TEXTURE_CUBE_MAP, " + texName + ");\n";
-						else if (itemData->Type == ObjectType::Image3D)
+						else if (itemData->Type == ObjectType::Image3D || itemData->Type == ObjectType::Texture3D)
 							renderSrc += indent + "glBindTexture(GL_TEXTURE_3D, " + texName + ");\n";
 						else if (itemData->Type == ObjectType::RenderTexture)
 							renderSrc += indent + "glBindTexture(GL_TEXTURE_2D, " + texName + "_Color);\n";

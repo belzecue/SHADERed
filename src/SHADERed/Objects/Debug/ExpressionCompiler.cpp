@@ -3,6 +3,7 @@
 #include <common/BinaryVectorWriter.h>
 #include <spvgentwo/GLSL450Instruction.h>
 #include <common/HeapList.h>
+#include <spvgentwo/Templates.h>
 #include <string.h>
 
 namespace ed {
@@ -32,7 +33,7 @@ namespace ed {
 
 		m_allocator = new spvgentwo::HeapAllocator();
 		m_grammar = new spvgentwo::Grammar(m_allocator);
-		m_module = new spvgentwo::Module(m_allocator, spvgentwo::spv::Version);
+		m_module = new spvgentwo::Module(m_allocator);
 	}
 	ExpressionCompiler::~ExpressionCompiler()
 	{
@@ -45,7 +46,7 @@ namespace ed {
 		BinaryVectorReader reader(spv);
 
 		m_module->reset();
-		m_module->read(&reader, *m_grammar);
+		m_module->read(reader, *m_grammar);
 		m_module->resolveIDs();
 		m_module->reconstructTypeAndConstantInfo();
 		m_module->reconstructNames();
@@ -121,8 +122,41 @@ namespace ed {
 						sc == spvgentwo::spv::StorageClass::Input ||
 						sc == spvgentwo::spv::StorageClass::Output) // global variable
 					{
-						if (m_vars.count(iName) == 0)
-							m_vars[iName] = &inst; // copy global variable
+						if (strlen(iName) != 0) { 
+							if (m_vars.count(iName) == 0)
+								m_vars[iName] = &inst; // copy global variable
+						} else {
+							// HLSL "" named cbuffers
+							if (inst.getResultTypeInstr()->getType()->isPointer()) {
+								bool isDone = false;
+								
+								// iterate over OpTypePointer operands, find the type to which it points to
+								for (auto opIt = inst.getResultTypeInstr()->begin(); opIt != inst.getResultTypeInstr()->end(); opIt++) {
+									if (!(*opIt).isInstruction())
+										continue;
+
+									// check if it's a struct
+									auto operand = (*opIt).getInstruction();
+									if (operand->getType() && operand->getType()->isStruct()) {
+										// if it is, iterate over it's member names
+										unsigned int memberIndex = 0;
+										const char* memberName = operand->getName(memberIndex);
+										while (memberName) {
+											if (m_vars.count(memberName)) {
+												m_vars[memberName] = myBB->opAccessChain(&inst, memberIndex);
+												isDone = true;
+												break;
+											}
+											memberName = operand->getName(++memberIndex);
+										}
+									}
+								
+									// finish
+									if (isDone)
+										break;
+								}
+							}
+						}
 					}
 					if (m_vars.count(iName) && m_vars[iName] == nullptr)
 						m_vars[iName] = &inst;
@@ -157,7 +191,7 @@ namespace ed {
 		// output spirv
 		outSPV.clear();
 		spvgentwo::BinaryVectorWriter writer(outSPV);
-		m_module->write(&writer);
+		m_module->write(writer);
 	}
 	std::vector<std::string> ExpressionCompiler::GetVariableList()
 	{
@@ -633,7 +667,7 @@ namespace ed {
 			if (obj->getType()->isVector())
 				return m_swizzle(obj, maccess->Field);
 			else if (obj->getType()->isStruct()) {
-				spvgentwo::Instruction* objType = obj->getTypeInstr();
+				spvgentwo::Instruction* objType = obj->getResultTypeInstr();
 				const char* member = nullptr;
 				unsigned int memberIndex = 0;
 				while ((member = objType->getName(memberIndex++)) != 0) {
@@ -663,7 +697,7 @@ namespace ed {
 					resType = m_module->type<spvgentwo::vector_t<float, 4>*>();
 				
 				if (resType != nullptr) {
-					spvgentwo::Instruction* tempVar = bb->opVariable(obj->getTypeInstr(), spvgentwo::spv::StorageClass::Function);
+					spvgentwo::Instruction* tempVar = bb->opVariable(obj->getResultTypeInstr(), spvgentwo::spv::StorageClass::Function);
 					bb->opStore(tempVar, obj);
 					spvgentwo::Instruction* vecPtr = bb->opAccessChain(resType, tempVar, m_visit(a_access->Indices[0]));
 					
@@ -698,7 +732,7 @@ namespace ed {
 
 			// user defined method
 			if (objType->isStruct()) {
-				const char* objName = obj->getTypeInstr()->getName();
+				const char* objName = obj->getResultTypeInstr()->getName();
 				std::string mname = std::string(objName) + "::" + fname;
 
 				// find a match with user defined function
@@ -782,15 +816,15 @@ namespace ed {
 		if (op != '*' || (op == '*' && !bBaseType.isFloat() && !aBaseType.isFloat())) {
 			if (aType->isVector() && !bType->isVector()) {
 				switch (aType->getVectorComponentCount()) {
-				case 2: outB = bb->opCompositeConstruct(a->getTypeInstr(), outB, outB); break;
-				case 3: outB = bb->opCompositeConstruct(a->getTypeInstr(), outB, outB, outB); break;
-				case 4: outB = bb->opCompositeConstruct(a->getTypeInstr(), outB, outB, outB, outB); break;
+				case 2: outB = bb->opCompositeConstruct(a->getResultTypeInstr(), outB, outB); break;
+				case 3: outB = bb->opCompositeConstruct(a->getResultTypeInstr(), outB, outB, outB); break;
+				case 4: outB = bb->opCompositeConstruct(a->getResultTypeInstr(), outB, outB, outB, outB); break;
 				}
 			} else if (bType->isVector() && !aType->isVector()) {
-				switch (aType->getVectorComponentCount()) {
-				case 2: outA = bb->opCompositeConstruct(a->getTypeInstr(), outA, outA); break;
-				case 3: outA = bb->opCompositeConstruct(a->getTypeInstr(), outA, outA, outA); break;
-				case 4: outA = bb->opCompositeConstruct(a->getTypeInstr(), outA, outA, outA, outA); break;
+				switch (bType->getVectorComponentCount()) {
+				case 2: outA = bb->opCompositeConstruct(b->getResultTypeInstr(), outA, outA); break;
+				case 3: outA = bb->opCompositeConstruct(b->getResultTypeInstr(), outA, outA, outA); break;
+				case 4: outA = bb->opCompositeConstruct(b->getResultTypeInstr(), outA, outA, outA, outA); break;
 				}
 			}
 		}

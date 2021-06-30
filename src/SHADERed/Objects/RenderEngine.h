@@ -5,6 +5,7 @@
 #include <SHADERed/Objects/PipelineManager.h>
 #include <SHADERed/Objects/PluginManager.h>
 #include <SHADERed/Objects/ProjectParser.h>
+#include <SHADERed/Objects/PerformanceTimer.h>
 
 #include <functional>
 #include <unordered_map>
@@ -35,7 +36,7 @@ namespace ed {
 		inline void Render(bool isDebug = false, PipelineItem* breakItem = nullptr) { Render(m_lastSize.x, m_lastSize.y, isDebug, breakItem); }
 		void Recompile(const char* name);
 		void RecompileFile(const char* fname);
-		void RecompileFromSource(const char* name, const std::string& vs = "", const std::string& ps = "", const std::string& gs = "");
+		void RecompileFromSource(const char* name, const std::string& vs = "", const std::string& ps = "", const std::string& gs = "", const std::string& tcs = "", const std::string& tes = "");
 		void Pick(float sx, float sy, bool multiPick, std::function<void(PipelineItem*)> func = nullptr);
 		void Pick(PipelineItem* item, bool add = false);
 		inline bool IsPicked(PipelineItem* item) { return std::count(m_pick.begin(), m_pick.end(), item); }
@@ -46,11 +47,19 @@ namespace ed {
 		std::pair<PipelineItem*, PipelineItem*> GetPipelineItemByDebugID(int id); // get pipeline item by it's debug id
 
 		inline void AllowComputeShaders(bool cs) { m_computeSupported = cs; }
+		inline void AllowTessellationShaders(bool ts) {
+			m_tessellationSupported = ts;
+			if (ts) glGetIntegerv(GL_MAX_PATCH_VERTICES, &m_tessMaxPatchVertices);
+		}
+		inline int GetMaxPatchVertices() { return m_tessMaxPatchVertices; }
 
 		inline void RequestTextureResize() { m_lastSize = glm::ivec2(1, 1); }
 		inline GLuint GetTexture() { return m_rtColor; }
 		inline GLuint GetDepthTexture() { return m_rtDepth; }
 		inline glm::ivec2 GetLastRenderSize() { return m_lastSize; }
+
+		inline const std::vector<PerformanceTimer>& GetPerformanceTimers() { return m_perfTimers; }
+		inline unsigned long long GetGPUTime() { return m_totalPerfTime; }
 
 		inline bool IsPaused() { return m_paused; }
 		void Pause(bool pause);
@@ -104,6 +113,10 @@ namespace ed {
 		// are compute shaders supported?
 		bool m_computeSupported;
 
+		// are tessellation shaders supported?
+		bool m_tessellationSupported;
+		int m_tessMaxPatchVertices;
+
 		// paused time?
 		bool m_paused;
 
@@ -143,10 +156,14 @@ namespace ed {
 		std::unordered_map<pipe::ShaderPass*, GLuint> m_fboCount;
 		std::unordered_map<pipe::ComputePass*, int> m_uboMax;
 		struct ShaderPack {
-			ShaderPack() { VS = GS = PS = 0; }
-			GLuint VS, PS, GS;
+			ShaderPack() { VS = GS = PS = TCS = TES = 0; }
+			GLuint VS, PS, GS, TCS, TES;
 		};
 		std::vector<ShaderPack> m_shaderSources;
+
+		std::vector<PerformanceTimer> m_perfTimers;
+		unsigned long long m_totalPerfTime;
+		eng::Timer m_lastPerfMeasure;
 
 		GLuint m_generalDebugShader;
 

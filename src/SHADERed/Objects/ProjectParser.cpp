@@ -272,6 +272,18 @@ namespace ed {
 						std::filesystem::copy_file(gs, shadersDir + "/" + newShaderFilename(projectStem, passItem->Name, "GS", gsExt), std::filesystem::copy_options::overwrite_existing, errc);
 					}
 
+					if (passData->TSUsed) {
+						// tcs
+						std::string tcs = std::filesystem::path(passData->TCSPath).is_absolute() ? passData->TCSPath : (proj + std::string(passData->TCSPath));
+						std::string tcsExt = getExtension(tcs);
+						std::filesystem::copy_file(tcs, shadersDir + "/" + newShaderFilename(projectStem, passItem->Name, "TCS", tcsExt), std::filesystem::copy_options::overwrite_existing, errc);
+					
+						// tes
+						std::string tes = std::filesystem::path(passData->TESPath).is_absolute() ? passData->TESPath : (proj + std::string(passData->TESPath));
+						std::string tesExt = getExtension(tes);
+						std::filesystem::copy_file(tes, shadersDir + "/" + newShaderFilename(projectStem, passItem->Name, "TES", tesExt), std::filesystem::copy_options::overwrite_existing, errc);
+					}
+
 					if (errc)
 						ed::Logger::Get().Log("Failed to copy a file (source == destination)", true);
 				} else if (passItem->Type == PipelineItem::ItemType::ComputePass) {
@@ -321,6 +333,7 @@ namespace ed {
 
 				passNode.append_attribute("type").set_value("shader");
 				passNode.append_attribute("active").set_value(passData->Active);
+				passNode.append_attribute("patchverts").set_value(passData->TSPatchVertices);
 
 				/* collapsed="true" attribute */
 				for (int i = 0; i < collapsedSP.size(); i++)
@@ -367,6 +380,38 @@ namespace ed {
 					gsNode.append_attribute("type").set_value("gs");
 					gsNode.append_attribute("path").set_value(relativePath.c_str());
 					gsNode.append_attribute("entry").set_value(passData->GSEntry);
+				}
+
+				// TCS shader
+				if (strlen(passData->TCSEntry) > 0 && strlen(passData->TCSPath) > 0) {
+					pugi::xml_node tcsNode = passNode.append_child("shader");
+					relativePath = (std::filesystem::path(passData->TCSPath).is_absolute()) ? passData->TCSPath : GetRelativePath(oldProjectPath + ((oldProjectPath[oldProjectPath.size() - 1] == '/') ? "" : "/") + std::string(passData->TCSPath));
+					if (copyFiles) {
+						std::string tcsExt = getExtension(passData->TCSPath);
+						relativePath = "shaders/" + newShaderFilename(projectStem, passItem->Name, "TCS", tcsExt);
+					}
+
+					tcsNode.append_attribute("used").set_value(passData->TSUsed);
+
+					tcsNode.append_attribute("type").set_value("tcs");
+					tcsNode.append_attribute("path").set_value(relativePath.c_str());
+					tcsNode.append_attribute("entry").set_value(passData->TCSEntry);
+				}
+
+				// TES shader
+				if (strlen(passData->TESEntry) > 0 && strlen(passData->TESPath) > 0) {
+					pugi::xml_node tesNode = passNode.append_child("shader");
+					relativePath = (std::filesystem::path(passData->TESPath).is_absolute()) ? passData->TESPath : GetRelativePath(oldProjectPath + ((oldProjectPath[oldProjectPath.size() - 1] == '/') ? "" : "/") + std::string(passData->TESPath));
+					if (copyFiles) {
+						std::string tesExt = getExtension(passData->TESPath);
+						relativePath = "shaders/" + newShaderFilename(projectStem, passItem->Name, "TES", tesExt);
+					}
+
+					tesNode.append_attribute("used").set_value(passData->TSUsed);
+
+					tesNode.append_attribute("type").set_value("tes");
+					tesNode.append_attribute("path").set_value(relativePath.c_str());
+					tesNode.append_attribute("entry").set_value(passData->TESEntry);
 				}
 
 				/* vs input layout */
@@ -544,15 +589,24 @@ namespace ed {
 				bool isImage3D = (item->Type == ObjectType::Image3D);
 				bool isPluginOwner = (item->Type == ObjectType::PluginObject);
 				bool isTexture = (item->Type == ObjectType::Texture);
+				bool isTexture3D = (item->Type == ObjectType::Texture3D);
 				bool isKeyboardTexture = (item->Type == ObjectType::KeyboardTexture);
 				
 				std::string texOutPath = item->Name;
 				if ((isTexture && !isKeyboardTexture) || isAudio)
-					texOutPath = GetRelativePath(oldProjectPath + "/" + item->Name);
+					texOutPath = GetTexturePath(item->Name, oldProjectPath);
+				
+				std::string typeName = "texture";
+				if (isBuffer) typeName = "buffer";
+				else if (isRT) typeName = "rendertexture";
+				else if (isAudio) typeName = "audio";
+				else if (isImage) typeName = "image";
+				else if (isImage3D) typeName = "image3d";
+				else if (isPluginOwner) typeName = "pluginobject";
 
 				pugi::xml_node textureNode = objectsNode.append_child("object");
-				textureNode.append_attribute("type").set_value(isBuffer ? "buffer" : (isRT ? "rendertexture" : (isAudio ? "audio" : (isImage ? "image" : (isImage3D ? "image3d" : (isPluginOwner ? "pluginobject" : "texture"))))));
-				textureNode.append_attribute(((isTexture && !isKeyboardTexture) || isAudio) ? "path" : "name").set_value(texOutPath.c_str());
+				textureNode.append_attribute("type").set_value(typeName.c_str());
+				textureNode.append_attribute(((isTexture && !isKeyboardTexture) || isTexture3D || isAudio) ? "path" : "name").set_value(texOutPath.c_str());
 
 				if (isRT) {
 					ed::RenderTextureObject* rtObj = item->RT;
@@ -577,20 +631,25 @@ namespace ed {
 
 					textureNode.append_attribute("cube").set_value(isCube);
 
-					textureNode.append_attribute("left").set_value(texmaps[0].c_str());
-					textureNode.append_attribute("top").set_value(texmaps[1].c_str());
-					textureNode.append_attribute("front").set_value(texmaps[2].c_str());
-					textureNode.append_attribute("bottom").set_value(texmaps[3].c_str());
-					textureNode.append_attribute("right").set_value(texmaps[4].c_str());
-					textureNode.append_attribute("back").set_value(texmaps[5].c_str());
+					textureNode.append_attribute("left").set_value(GetTexturePath(texmaps[0], oldProjectPath).c_str());
+					textureNode.append_attribute("top").set_value(GetTexturePath(texmaps[1], oldProjectPath).c_str());
+					textureNode.append_attribute("front").set_value(GetTexturePath(texmaps[2], oldProjectPath).c_str());
+					textureNode.append_attribute("bottom").set_value(GetTexturePath(texmaps[3], oldProjectPath).c_str());
+					textureNode.append_attribute("right").set_value(GetTexturePath(texmaps[4], oldProjectPath).c_str());
+					textureNode.append_attribute("back").set_value(GetTexturePath(texmaps[5], oldProjectPath).c_str());
 				}
 
-				if (isTexture && !isKeyboardTexture) {
+				if ((isTexture && !isKeyboardTexture) || isTexture3D) {
 					textureNode.append_attribute("vflip").set_value(item->Texture_VFlipped);
 					textureNode.append_attribute("min_filter").set_value(ed::gl::String::TextureMinFilter(item->Texture_MinFilter));
 					textureNode.append_attribute("mag_filter").set_value(ed::gl::String::TextureMagFilter(item->Texture_MagFilter));
 					textureNode.append_attribute("wrap_s").set_value(ed::gl::String::TextureWrap(item->Texture_WrapS));
 					textureNode.append_attribute("wrap_t").set_value(ed::gl::String::TextureWrap(item->Texture_WrapT));
+
+					if (isTexture3D) {
+						textureNode.append_attribute("is_3d").set_value(true);
+						textureNode.append_attribute("wrap_r").set_value(ed::gl::String::TextureWrap(item->Texture_WrapR));
+					}
 				}
 
 				if (isKeyboardTexture)
@@ -600,7 +659,7 @@ namespace ed {
 					ImageObject* iobj = item->Image;
 
 					if (iobj->DataPath[0] != 0)
-						textureNode.append_attribute("data").set_value(iobj->DataPath);
+						textureNode.append_attribute("data").set_value(GetTexturePath(iobj->DataPath, oldProjectPath).c_str());
 
 					textureNode.append_attribute("width").set_value(iobj->Size.x);
 					textureNode.append_attribute("height").set_value(iobj->Size.y);
@@ -721,7 +780,16 @@ namespace ed {
 				pugi::xml_node fileNode = settingsNode.append_child("entry");
 				fileNode.append_attribute("type").set_value("file");
 				fileNode.append_attribute("name").set_value(file.first.c_str());
-				fileNode.append_attribute("shader").set_value(file.second == ShaderStage::Vertex ? "vs" : (file.second == ShaderStage::Pixel ? "ps" : (file.second == ShaderStage::Geometry ? "gs" : "cs")));
+
+				std::string shaderAbbr = "vs";
+				if (file.second == ShaderStage::Pixel) shaderAbbr = "ps";
+				if (file.second == ShaderStage::Geometry) shaderAbbr = "gs";
+				if (file.second == ShaderStage::TessellationControl) shaderAbbr = "tcs";
+				if (file.second == ShaderStage::TessellationEvaluation) shaderAbbr = "tes";
+				if (file.second == ShaderStage::Compute) shaderAbbr = "cs";
+				if (file.second == ShaderStage::Audio) shaderAbbr = "as";
+
+				fileNode.append_attribute("shader").set_value(shaderAbbr.c_str());
 			}
 
 			// pinned ui
@@ -961,17 +1029,23 @@ namespace ed {
 	}
 	std::string ProjectParser::GetProjectPath(const std::string& to)
 	{
-#if defined(_WIN32)
-		std::filesystem::path fTo(to);
-		if (fTo.is_absolute()) // TODO: from.root_path == to.root_path check? or nah?
-			return to;
-#endif
+		std::filesystem::path fTo = std::filesystem::u8path(to);
 
-		return std::filesystem::path(m_projectPath + ((m_projectPath[m_projectPath.size() - 1] == '/') ? "" : "/") + to).generic_string();
+		if (!fTo.is_absolute())
+			fTo = std::filesystem::u8path(m_projectPath) / fTo;
+		
+		return fTo.generic_string();
 	}
 	bool ProjectParser::FileExists(const std::string& str)
 	{
 		return std::filesystem::exists(GetProjectPath(str));
+	}
+	std::string ProjectParser::GetTexturePath(const std::string& texPath, const std::string& oldProjectPath)
+	{
+		if (std::filesystem::path(texPath).is_absolute())
+			return GetRelativePath(texPath);
+		else
+			return GetRelativePath(std::filesystem::absolute(std::filesystem::path(oldProjectPath) / texPath).string());				
 	}
 	void ProjectParser::ResetProjectDirectory()
 	{
@@ -2113,13 +2187,16 @@ namespace ed {
 						PipelineItem* item = m_pipe->Get(settingItem.attribute("name").as_string());
 						const pugi::char_t* shaderType = settingItem.attribute("shader").as_string();
 
-						std::string type = ((strcmp(shaderType, "vs") == 0) ? "vertex" : ((strcmp(shaderType, "ps") == 0) ? "pixel" : "geometry"));
 						std::string path = ((ed::pipe::ShaderPass*)item->Data)->VSPath;
 
 						if (strcmp(shaderType, "ps") == 0)
 							path = ((ed::pipe::ShaderPass*)item->Data)->PSPath;
 						else if (strcmp(shaderType, "gs") == 0)
 							path = ((ed::pipe::ShaderPass*)item->Data)->GSPath;
+						else if (strcmp(shaderType, "tcs") == 0)
+							path = ((ed::pipe::ShaderPass*)item->Data)->TCSPath;
+						else if (strcmp(shaderType, "tes") == 0)
+							path = ((ed::pipe::ShaderPass*)item->Data)->TESPath;
 
 						if (strcmp(shaderType, "vs") == 0 && FileExists(path))
 							editor->Open(item, ShaderStage::Vertex);
@@ -2127,6 +2204,10 @@ namespace ed {
 							editor->Open(item, ShaderStage::Pixel);
 						else if (strcmp(shaderType, "gs") == 0 && FileExists(path))
 							editor->Open(item, ShaderStage::Geometry);
+						else if (strcmp(shaderType, "tcs") == 0 && FileExists(path))
+							editor->Open(item, ShaderStage::TessellationControl);
+						else if (strcmp(shaderType, "tes") == 0 && FileExists(path))
+							editor->Open(item, ShaderStage::TessellationEvaluation);
 					}
 				} else if (type == "pinned") {
 					PinnedUI* pinned = ((PinnedUI*)m_ui->Get(ViewID::Pinned));
@@ -2241,6 +2322,10 @@ namespace ed {
 						((PipelineUI*)m_ui->Get(ViewID::Pipeline))->Collapse(data);
 				}
 
+				// patch vertex count
+				if (!passNode.attribute("patchverts").empty())
+					data->TSPatchVertices = std::max<int>(1, std::min<int>(m_renderer->GetMaxPatchVertices(), passNode.attribute("patchverts").as_int()));
+
 				// get render textures
 				int rtCur = 0;
 				for (pugi::xml_node rtNode : passNode.children("rendertexture")) {
@@ -2277,6 +2362,20 @@ namespace ed {
 							data->GSUsed = false;
 						strcpy(data->GSPath, shaderPath);
 						strcpy(data->GSEntry, shaderEntry);
+					} else if (shaderNodeType == "tcs") {
+						if (!shaderNode.attribute("used").empty())
+							data->TSUsed = shaderNode.attribute("used").as_bool();
+						else
+							data->TSUsed = false;
+						strcpy(data->TCSPath, shaderPath);
+						strcpy(data->TCSEntry, shaderEntry);
+					} else if (shaderNodeType == "tes") {
+						if (!shaderNode.attribute("used").empty())
+							data->TSUsed = shaderNode.attribute("used").as_bool();
+						else
+							data->TSUsed = false;
+						strcpy(data->TESPath, shaderPath);
+						strcpy(data->TESEntry, shaderEntry);
 					}
 
 					std::string type = ((shaderNodeType == "vs") ? "vertex" : ((shaderNodeType == "ps") ? "pixel" : "geometry"));
@@ -2668,6 +2767,7 @@ namespace ed {
 				pugi::char_t name[SHADERED_MAX_PATH];
 				bool isCube = false;
 				bool isKeyboardTexture = false;
+				bool is3D = false;
 				pugi::char_t cubeLeft[SHADERED_MAX_PATH], cubeRight[SHADERED_MAX_PATH], cubeTop[SHADERED_MAX_PATH],
 					cubeBottom[SHADERED_MAX_PATH], cubeFront[SHADERED_MAX_PATH], cubeBack[SHADERED_MAX_PATH];
 				
@@ -2675,6 +2775,8 @@ namespace ed {
 					isCube = objectNode.attribute("cube").as_bool();
 				if (!objectNode.attribute("keyboard_texture").empty())
 					isKeyboardTexture = objectNode.attribute("keyboard_texture").as_bool();
+				if (!objectNode.attribute("is_3d").empty())
+					is3D = objectNode.attribute("is_3d").as_bool();
 
 				if (isCube || isKeyboardTexture)
 					strcpy(name, objectNode.attribute("name").as_string());
@@ -2694,6 +2796,8 @@ namespace ed {
 					m_objects->CreateCubemap(name, cubeLeft, cubeTop, cubeFront, cubeBottom, cubeRight, cubeBack);
 				else if (isKeyboardTexture)
 					m_objects->CreateKeyboardTexture(name);
+				else if (is3D)
+					m_objects->CreateTexture3D(name);
 				else
 					m_objects->CreateTexture(name);
 
@@ -2762,6 +2866,18 @@ namespace ed {
 									itemData->Texture_WrapT = TEXTURE_WRAP_VALUES[i];
 									break;
 								}
+						}
+
+						if (is3D) {
+							// wrap z
+							if (!objectNode.attribute("wrap_r").empty()) {
+								auto filterName = objectNode.attribute("wrap_r").as_string();
+								for (int i = 0; i < HARRAYSIZE(TEXTURE_WRAP_VALUES); i++)
+									if (strcmp(filterName, TEXTURE_WRAP_NAMES[i]) == 0) {
+										itemData->Texture_WrapT = TEXTURE_WRAP_VALUES[i];
+										break;
+									}
+							}
 						}
 
 						m_objects->UpdateTextureParameters(name);
@@ -3136,6 +3252,10 @@ namespace ed {
 								path = ((ed::pipe::ShaderPass*)item->Data)->PSPath;
 							else if (strcmp(shaderType, "gs") == 0)
 								path = ((ed::pipe::ShaderPass*)item->Data)->GSPath;
+							else if (strcmp(shaderType, "tcs") == 0)
+								path = ((ed::pipe::ShaderPass*)item->Data)->TCSPath;
+							else if (strcmp(shaderType, "tes") == 0)
+								path = ((ed::pipe::ShaderPass*)item->Data)->TESPath;
 
 							if (strcmp(shaderType, "vs") == 0 && FileExists(path))
 								editor->Open(item, ShaderStage::Vertex);
@@ -3143,6 +3263,10 @@ namespace ed {
 								editor->Open(item, ShaderStage::Pixel);
 							else if (strcmp(shaderType, "gs") == 0 && FileExists(path))
 								editor->Open(item, ShaderStage::Geometry);
+							else if (strcmp(shaderType, "tcs") == 0 && FileExists(path))
+								editor->Open(item, ShaderStage::TessellationControl);
+							else if (strcmp(shaderType, "tes") == 0 && FileExists(path))
+								editor->Open(item, ShaderStage::TessellationEvaluation);
 						} else if (item->Type == PipelineItem::ItemType::ComputePass) {
 							std::string path = ((ed::pipe::ComputePass*)item->Data)->Path;
 

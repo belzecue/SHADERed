@@ -29,14 +29,28 @@ you will be able to:
 * see list of all variables and their values
 * hover over expressions and see their value
 
-<img src="./Misc/Screenshots/debugger.gif">
+![Debugging a shader](./Misc/Screenshots/debugger.gif)
 
-With SHADERed, you can debug vertex, geometry, pixel and compute shaders.
+With SHADERed, you can debug vertex, geometry, tessellation control, pixel and compute shaders.
+
+Thanks to SHADERed, you can now also debug shaders in Visual Studio Code with an extension. Read more about this in the blog post: [https://shadered.org/blog?id=9](https://shadered.org/blog?id=9).
+
+### Frame analyzer
+Besides debugging your shader line-by-line, SHADERed also lets you find bugs and errors visually.
+After you run the frame analyzer, you will be able to:
+* detect undefined behavior
+* see variable's value throughout the whole frame
+* global breakpoints (color a pixel that meets a certain condition)
+* SPIR-V instruction heatmap
+
+![Analyzing a frame](./Misc/Screenshots/UndefinedBehavior.png)
 
 ### Compute & geometry shaders
 You are not limited to vertex and pixel shaders. SHADERed also supports compute & geometry
 shaders. You can create advanced animations and effects with these two shader stages:
-<img src="./Misc/Screenshots/computesh.gif">
+
+![Compute shaders and buffers](./Misc/Screenshots/computesh.gif)
+
 
 ### Plugin API
 You can develop custom SHADERed plugins and upload them to [SHADERed store](https://shadered.org/addons) so that they can be installed through SHADERed.
@@ -51,8 +65,11 @@ To see the plugin API's potential, check out these plugins:
 * [Terminal](https://shadered.org/plugin?id=Terminal) - open terminal windows in SHADERed
 
 ### See changes instantly
-SHADERed can compile your shaders while you write  the code. This way you can see your changes instantly. SHADERed also works nicely with external text editors (such as VS Code) - it will recompile the shaders if it has been modified by some external program.
-<img src="./Misc/Screenshots/instantresult.gif">
+SHADERed can compile your shaders while you write the code.
+This way you can see your changes instantly.
+SHADERed also works nicely with external text editors (such as VS Code) - it will recompile the shaders that were modified by some external program.
+
+![Instant preview as you write your shader](./Misc/Screenshots/instantresult.gif)
 
 ### Other features
 SHADERed has lots of features that let you achieve effects like in no other shader editor. Features are also being added rapidly. Here are some of the feature:
@@ -64,7 +81,8 @@ SHADERed has lots of features that let you achieve effects like in no other shad
 * render textures (easily build G-Buffer)
 * buffers
 * instancing
-* camera system
+* profiling
+* multi-camera system
 * audio shaders (generate music on GPU)
 * custom variables & powerful variable system
 * zooming in on the preview window
@@ -84,10 +102,11 @@ SHADERed has lots of features that let you achieve effects like in no other shad
   * [Wogos Media](http://theWogos.com/)
   * [Snow Developments](https://snow.llc)
   * [Adad Morales](https://www.moralesfx.com/)
+  * [Liam Don](https://twitter.com/liamdon)
+  * [Chris Sprance](https://csprance.com)
+  * Andrew Kerr
 
 If you like SHADERed and would like to support the development, check out Patreon: [<img width="120" src="https://c5.patreon.com/external/logo/become_a_patron_button@2x.png">](https://www.patreon.com/dfranx)
-
-... or **PayPal**: [<img src="https://www.paypalobjects.com/webstatic/en_US/i/buttons/pp-acceptance-medium.png" alt="Buy now with PayPal" />](https://paypal.me/dfranx) 
 
 My e-mail address for businesses (or if you just want to contact me):
 **contact at shadered dot org**
@@ -131,9 +150,9 @@ git submodule update --init
 Install all the libraries that are needed:
 ```
 # Ubuntu
-sudo apt install libsdl2-dev libsfml-dev libglew-dev libglm-dev libgtk-3-dev
+sudo apt install libsdl2-dev libglew-dev libglm-dev libgtk-3-dev
 # Fedora
-sudo dnf install SFML-devel glm-devel glew-devel SDL2-devel gtk3-devel
+sudo dnf install glm-devel glew-devel SDL2-devel gtk3-devel
 ```
 
 Build:
@@ -142,23 +161,11 @@ cmake .
 make
 ```
 
-**NOTE:** If you want immediate mode and related features, set the BUILD_IMMEDIATE_MODE flag to "ON".
-```
-cmake -DBUILD_IMMEDIATE_MODE=ON .
-make
-```
-
-**NOTE:** If you dont have SFML 2.5 installed on your machine, run these commands:
-```
-cmake -DUSE_FINDSFML=ON .
-make
-```
-
 If you would like to perform an out-of-source build, do the following:
 ```
 mkdir build
 cd build
-cmake .. # or, if SFML 2.5 is not installed, cmake -DUSE_FINDSFML=ON ..
+cmake ..
 make
 ```
 
@@ -173,7 +180,7 @@ Run:
 Install all the libraries that are needed:
 
 ```sh
-brew install sdl2 sfml glew glm
+brew install sdl2 glew glm
 ```
 
 Build:
@@ -197,8 +204,8 @@ Run:
 ```
 
 ### Windows
-1. Install SDL2, SFML, GLEW & GLM through your favourite package manager (I recommend vcpkg)
-2. Run cmake-gui and set CMAKE_TOOLCHAIN_FILE variable (and turn on BUILD_IMMEDIATE_MODE flag if you want to have immediate mode and related features)
+1. Install SDL2, GLEW & GLM through your favourite package manager (I recommend vcpkg)
+2. Run cmake-gui and set CMAKE_TOOLCHAIN_FILE variable
 3. Press Configure and then Generate if no errors occured
 4. Open the .sln and build the project!
 
@@ -227,12 +234,11 @@ This project uses:
  - [zeux/pugixml](https://github.com/zeux/pugixml)
  - [dfranx/ShaderExpressionParser](https://github.com/dfranx/ShaderExpressionParser)
  - [KhronosGroup/SPIRV-Cross](https://github.com/KhronosGroup/SPIRV-Cross)
- - [KhronosGroup/SPIRV-Headers](https://github.com/KhronosGroup/SPIRV-Headers)
- - [KhronosGroup/SPIRV-Tools](https://github.com/KhronosGroup/SPIRV-Tools)
  - [dfranx/SPIRV-VM](https://github.com/dfranx/SPIRV-VM)
  - [rAzoR8/SpvGenTwo](https://github.com/rAzoR8/SpvGenTwo)
  - [nothings/stb](https://github.com/nothings/stb)
- - [aiekick/ImGuiFileDialog](https://github.com/aiekick/ImGuiFileDialog)
+ - [dfranx/ImFileDialog](https://github.com/dfranx/ImFileDialog)
+ - [dfranx/dds](https://github.com/dfranx/dds)
 
 ## LICENSE
 SHADERed is licensed under MIT license. See [LICENSE](./LICENSE) for more details.

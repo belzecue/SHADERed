@@ -11,7 +11,7 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/type_ptr.hpp>
 
-#include <ImGuiFileDialog/ImGuiFileDialog.h>
+#include <misc/ImFileDialog.h>
 
 #define IMAGE_CONTEXT_WIDTH Settings::Instance().CalculateSize(150)
 
@@ -55,7 +55,7 @@ namespace ed {
 			std::string itemText = oItem->Name;
 			std::string fullItemText = itemText;
 
-			if (oItem->Type == ObjectType::Texture || oItem->Type == ObjectType::Audio) {
+			if (oItem->Type == ObjectType::Texture || oItem->Type == ObjectType::Texture3D || oItem->Type == ObjectType::Audio) {
 				size_t lastSlash = oItem->Name.find_last_of("/\\");
 
 				if (lastSlash != std::string::npos && !isPluginOwner)
@@ -93,15 +93,19 @@ namespace ed {
 			if (ImGui::BeginPopupContextItem(std::string("##context" + items[i]->Name).c_str())) {
 				itemMenuOpened = true;
 
-				if ((hasPluginExtendedPreview || !isPluginOwner) && !isImg3D && (isBuf ? ImGui::Selectable("Edit") : ImGui::Selectable("Preview"))) {
+				if ((hasPluginExtendedPreview || !isPluginOwner) && (isBuf ? ImGui::Selectable("Edit") : ImGui::Selectable("Preview")))
 					((ObjectPreviewUI*)m_ui->Get(ViewID::ObjectPreview))->Open(oItem);
-				}
 
 				bool hasPluginPreview = isPluginOwner && pobj->Owner->Object_HasPreview(pobj->Type);
 				if (oItem->Type == ObjectType::CubeMap) {
 					m_cubePrev.Draw(tex);
 					ImGui::Image((void*)(intptr_t)m_cubePrev.GetTexture(), ImVec2(IMAGE_CONTEXT_WIDTH, ((float)imgWH) * IMAGE_CONTEXT_WIDTH), ImVec2(0, 1), ImVec2(1, 0));
-				} else if (!isBuf && !isImg3D && !isPluginOwner)
+				} 
+				else if (oItem->Type == ObjectType::Texture3D || oItem->Type == ObjectType::Image3D) {
+					m_tex3DPrev.Draw(tex, IMAGE_CONTEXT_WIDTH, ((float)imgWH) * IMAGE_CONTEXT_WIDTH);
+					ImGui::Image((void*)(intptr_t)m_tex3DPrev.GetTexture(), ImVec2(IMAGE_CONTEXT_WIDTH, ((float)imgWH) * IMAGE_CONTEXT_WIDTH));
+				}
+				else if (!isBuf && !isImg3D && !isPluginOwner)
 					ImGui::Image((void*)(intptr_t)tex, ImVec2(IMAGE_CONTEXT_WIDTH, ((float)imgWH) * IMAGE_CONTEXT_WIDTH), ImVec2(0, 1), ImVec2(1, 0));
 				else if (hasPluginPreview)
 					pobj->Owner->Object_ShowPreview(pobj->Type, pobj->Data, pobj->ID);
@@ -166,14 +170,14 @@ namespace ed {
 					ImGui::Separator();
 				}
 
-				if (oItem->Type == ObjectType::RenderTexture || oItem->Type == ObjectType::Image || oItem->Type == ObjectType::Texture || isImg3D || (isPluginOwner && pobj->Owner->Object_HasProperties(pobj->Type))) {
+				if (oItem->Type == ObjectType::RenderTexture || oItem->Type == ObjectType::Image || oItem->Type == ObjectType::Texture || oItem->Type == ObjectType::Texture3D || isImg3D || (isPluginOwner && pobj->Owner->Object_HasProperties(pobj->Type))) {
 					if (ImGui::Selectable("Properties"))
 						((ed::PropertyUI*)m_ui->Get(ViewID::Properties))->Open(oItem);
 				}
 
 				if (oItem->Type == ObjectType::RenderTexture || oItem->Type == ObjectType::Image || oItem->Type == ObjectType::Texture) {
 					if (ImGui::Selectable("Save")) {
-						igfd::ImGuiFileDialog::Instance()->OpenModal("SaveTextureDlg", "Save", "Image file (*.png;*.jpg;*.jpeg;*.bmp;*.tga){.png,.jpg,.jpeg,.bmp,.tga},.*", ".");
+						ifd::FileDialog::Instance().Save("SaveTextureDlg", "Save", "Image file (*.png;*.jpg;*.jpeg;*.bmp;*.tga){.png,.jpg,.jpeg,.bmp,.tga},.*");
 						m_saveObject = oItem;
 					}
 				}
@@ -271,20 +275,19 @@ namespace ed {
 
 		ImGui::EndChild();
 
-		if (igfd::ImGuiFileDialog::Instance()->FileDialog("SaveTextureDlg")) {
-			if (igfd::ImGuiFileDialog::Instance()->IsOk && m_saveObject) {
-				std::string filePath = igfd::ImGuiFileDialog::Instance()->GetFilepathName();
-				m_data->Objects.SaveToFile(m_saveObject, filePath);
-			}
-			igfd::ImGuiFileDialog::Instance()->CloseDialog("SaveTextureDlg");
+		if (ifd::FileDialog::Instance().IsDone("SaveTextureDlg")) {
+			if (ifd::FileDialog::Instance().HasResult() && m_saveObject)
+				m_data->Objects.SaveToFile(m_saveObject, ifd::FileDialog::Instance().GetResult().u8string());
+			ifd::FileDialog::Instance().Close();
 		}
 
 		if (!itemMenuOpened && ImGui::BeginPopupContextItem("##context_main_objects")) {
-			if (ImGui::Selectable("Create Texture")) { m_ui->CreateNewTexture(); }
-			if (ImGui::Selectable("Create Cubemap")) { m_ui->CreateNewCubemap(); }
-			if (ImGui::Selectable("Create Render Texture")) { m_ui->CreateNewRenderTexture(); }
-			if (ImGui::Selectable("Create Audio")) { m_ui->CreateNewAudio(); }
-			if (ImGui::Selectable("Create Buffer")) { m_ui->CreateNewBuffer(); }
+			if (ImGui::Selectable("Create Texture")) m_ui->CreateNewTexture();
+			if (ImGui::Selectable("Create Texture 3D")) m_ui->CreateNewTexture3D();
+			if (ImGui::Selectable("Create Cubemap")) m_ui->CreateNewCubemap();
+			if (ImGui::Selectable("Create Render Texture")) m_ui->CreateNewRenderTexture();
+			if (ImGui::Selectable("Create Audio")) m_ui->CreateNewAudio();
+			if (ImGui::Selectable("Create Buffer")) m_ui->CreateNewBuffer();
 			if (ImGui::Selectable("Create Empty Image")) m_ui->CreateNewImage();
 			if (ImGui::Selectable("Create Empty 3D Image")) m_ui->CreateNewImage3D();
 			

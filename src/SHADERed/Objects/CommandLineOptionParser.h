@@ -11,12 +11,16 @@ namespace ed {
 
 		void Parse(const std::filesystem::path& cmdDir, int argc, char* argv[]);
 
+		void Execute();
+
 		bool LaunchUI;
 
 		std::string CompilePath, CompileOutput, CompileEntry;
 		ed::ShaderStage CompileStage;
 		ed::ShaderLanguage CompileLanguage;
 		bool CompileSPIRV;
+
+		std::string ConvertPath;
 
 		std::string RenderPath;
 		bool Render, RenderSequence;
@@ -29,5 +33,7 @@ namespace ed {
 		int WindowWidth, WindowHeight;
 		bool MinimalMode;
 		std::string ProjectFile;
+
+		bool StartDAPServer;
 	};
 }

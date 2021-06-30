@@ -5,9 +5,7 @@
 #include <SHADERed/Objects/ObjectManager.h>
 #include <SHADERed/Objects/RenderEngine.h>
 #include <SHADERed/Objects/ShaderLanguage.h>
-#ifdef BUILD_IMMEDIATE_MODE
-	#include <SHADERed/Objects/Debug/ExpressionCompiler.h>
-#endif
+#include <SHADERed/Objects/Debug/ExpressionCompiler.h>
 
 #include <sstream>
 
@@ -25,12 +23,15 @@ namespace ed {
 
 		inline spvm_state_t GetVM() { return m_vm; }
 		inline spvm_state_t GetVMImmediate() { return m_vmImmediate; }
+		inline spvm_context_t GetVMContext() { return m_vmContext; }
+		inline spvm_ext_opcode_func* GetGLSLExtension() { return m_vmGLSL; }
 		inline int GetCurrentLine() { return m_shader->language == SpvSourceLanguageHLSL ? (m_vm->current_line - 1) : m_vm->current_line; }
-		inline bool IsVMRunning() { return m_vm->code_current != nullptr; }
+		inline bool IsVMRunning() { return m_vm != nullptr && m_vm->code_current != nullptr; }
 		inline void SetCurrentFile(const std::string& file) { m_file = file; }
 		inline const std::string& GetCurrentFile() { return m_file; }
 		inline const std::vector<int>& GetFunctionStackLines() { return m_funcStackLines; }
-
+		inline const std::vector<unsigned int>& GetSPIRV() { return m_spv; }
+		
 		spvm_member_t GetVariable(const std::string& str, size_t& count, spvm_result_t& outType);
 		spvm_member_t GetVariable(const std::string& str, size_t& count);
 		spvm_member_t GetVariableFromState(spvm_state_t state, const std::string& str, size_t& count, spvm_result_t& outType);
@@ -43,26 +44,34 @@ namespace ed {
 		void CopyVertexShaderOutput(PixelInformation& px, int vertexIndex);
 
 		void PreparePixelShader(PipelineItem* pass, PipelineItem* item, PixelInformation* px = nullptr);
-		void SetPixelShaderInput(PixelInformation& pixel);
+		float SetPixelShaderInput(PixelInformation& pixel);
 		glm::vec4 ExecutePixelShader(int x, int y, int loc = 0);
+		glm::vec4 GetPixelShaderOutput(int loc = 0);
 
 		void PrepareGeometryShader(PipelineItem* pass, PipelineItem* item, PixelInformation* px = nullptr);
 		void SetGeometryShaderInput(PixelInformation& pixel);
 		void ExecuteGeometryShader();
 
+		void PrepareTessellationControlShader(PipelineItem* pass, PipelineItem* item, PixelInformation* px = nullptr);
+		void SetTessellationControlShaderInput(PixelInformation& pixel);
+		void ExecuteTessellationControlShader(unsigned int invocationId);
+		void CopyTessellationControlShaderOutput();
+
 		void PrepareComputeShader(PipelineItem* pass, int x, int y, int z);
 
 		spvm_result_t Immediate(const std::string& entry, spvm_result_t& outType);
 
+		spvm_word GetEntryPoint(ShaderStage stage);
 		void PrepareDebugger();
 
-		void Jump(int line);
-		void Continue();
+		bool Jump(int line);
+		bool Continue();
 		void Step();
 		void StepInto();
 		void StepOut();
 		bool CheckBreakpoint(int line);
 		
+		void ClearPixelData(PixelInformation& px);
 		void ClearPixelList();
 		inline void AddPixel(const PixelInformation& px) { m_pixels.push_back(px); }
 		inline std::vector<PixelInformation>& GetPixelList() { return m_pixels; }
@@ -95,6 +104,13 @@ namespace ed {
 		inline const std::vector<bool>& GetBreakpointStateList(const std::string& file) { return m_breakpointStates[file]; }
 		inline const std::unordered_map<std::string, std::vector<dbg::Breakpoint>>& GetBreakpointList() { return m_breakpoints; }
 		inline const std::unordered_map<std::string, std::vector<bool>>& GetBreakpointStateList() { return m_breakpointStates; }
+		inline void ClearBreakpointList(const std::string& file)
+		{
+			if (m_breakpoints.count(file))
+				m_breakpoints.erase(file);
+			if (m_breakpointStates.count(file))
+				m_breakpointStates.erase(file);
+		}
 		inline void ClearBreakpointList()
 		{
 			m_breakpoints.clear();
@@ -120,16 +136,27 @@ namespace ed {
 		inline bool IsGeometryUpdated() { return m_updatedGeometryOutput; }
 		inline void ResetGeometryUpdated() { m_updatedGeometryOutput = false; }
 
+		// VertexShaderPosition variable
+		glm::vec4 GetPositionThroughVertexShader(PipelineItem* pass, PipelineItem* item, const glm::vec3& pos);
+
+		// analyzer stuff
+		inline void ToggleAnalyzer(bool analyze)
+		{
+			if (m_vm != nullptr)
+				m_vm->analyzer = analyze ? &m_analyzer : nullptr;
+		}
+		void OnUndefinedBehavior(spvm_state_t state, spvm_word ubID);
+		inline spvm_word GetLastUndefinedBehaviorType() { return m_ubLastType; }
+		inline spvm_word GetLastUndefinedBehaviorLine() { return m_ubLastLine; }
+		inline spvm_word GetUndefinedBehaviorCount() { return m_ubCount; }
+
 	private:
 		ObjectManager* m_objs;
 		RenderEngine* m_renderer;
 		MessageStack* m_msgs;
 
 		bool m_updatedGeometryOutput;
-
-#ifdef BUILD_IMMEDIATE_MODE
 		ExpressionCompiler m_compiler;
-#endif
 
 		bool m_isDebugging;
 
@@ -147,7 +174,7 @@ namespace ed {
 		spvm_context_t m_vmContext;
 		spvm_ext_opcode_func* m_vmGLSL;
 
-		// keep track of replace results
+		// keep track of replaced results
 		struct OriginalValue {
 			OriginalValue(spvm_state_t state, int slot, spvm_word member_count, spvm_member_t members)
 			{
@@ -174,6 +201,7 @@ namespace ed {
 		void m_resetVM();
 		spvm_state_t m_vm;
 		spvm_program_t m_shader;
+		spvm_analyzer m_analyzer;
 		std::vector<unsigned int> m_spv;
 
 		spvm_state_t m_vmImmediate;
@@ -199,5 +227,9 @@ namespace ed {
 
 		std::unordered_map<std::string, std::vector<dbg::Breakpoint>> m_breakpoints;
 		std::unordered_map<std::string, std::vector<bool>> m_breakpointStates;
+
+		spvm_word m_ubLastType; // currently only keep track of last UB that happened
+		spvm_word m_ubLastLine; // line on which last undefined behavior happened
+		spvm_word m_ubCount;	// number of undefined behaviors that happened
 	};
 }

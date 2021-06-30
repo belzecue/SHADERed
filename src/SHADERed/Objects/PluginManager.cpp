@@ -13,7 +13,7 @@
 #include <SHADERed/UI/PropertyUI.h>
 #include <SHADERed/UI/UIHelper.h>
 
-#include <ImGuiFileDialog/ImGuiFileDialog.h>
+#include <misc/ImFileDialog.h>
 
 #include <imgui/imgui.h>
 #include <vector>
@@ -439,6 +439,12 @@ namespace ed {
 						} else if (stage == plugin::ShaderStage::Geometry) {
 							*len = data->GSSPV.size();
 							return data->GSSPV.data();
+						} else if (stage == plugin::ShaderStage::TessellationControl) {
+							*len = data->TCSSPV.size();
+							return data->TCSSPV.data();
+						} else if (stage == plugin::ShaderStage::TessellationEvaluation) {
+							*len = data->TESSPV.size();
+							return data->TESSPV.data();
 						}
 					} else if (pItem->Type == PipelineItem::ItemType::ComputePass) {
 						pipe::ComputePass* data = (pipe::ComputePass*)pItem->Data;
@@ -891,22 +897,23 @@ namespace ed {
 						return 2;
 					};
 					plugin2->ImGuiFileDialogOpen = [](const char* key, const char* title, const char* filter) {
-						igfd::ImGuiFileDialog::Instance()->OpenModal(key, title, filter, ".");
+						ifd::FileDialog::Instance().Save(key, title, filter);
 					};
 					plugin2->ImGuiDirectoryDialogOpen = [](const char* key, const char* title) {
-						igfd::ImGuiFileDialog::Instance()->OpenModal(key, title, nullptr, ".");
+						ifd::FileDialog::Instance().Open(key, title, "");
 					};
 					plugin2->ImGuiFileDialogIsDone = [](const char* key) -> bool {
-						return igfd::ImGuiFileDialog::Instance()->FileDialog(key);
+						return ifd::FileDialog::Instance().IsDone(key);
 					};
 					plugin2->ImGuiFileDialogClose = [](const char* key) {
-						igfd::ImGuiFileDialog::Instance()->CloseDialog(key);
+						ifd::FileDialog::Instance().Close();
 					};
 					plugin2->ImGuiFileDialogGetResult = []() -> bool {
-						return igfd::ImGuiFileDialog::Instance()->IsOk;
+						return ifd::FileDialog::Instance().HasResult();
 					};
 					plugin2->ImGuiFileDialogGetPath = [](char* outPath) {
-						strcpy(outPath, igfd::ImGuiFileDialog::Instance()->GetFilepathName().c_str());
+						std::string res = ifd::FileDialog::Instance().GetResult().u8string();
+						strcpy(outPath, res.c_str());
 					};
 					plugin2->DebuggerImmediate = [](void* Debugger, const char* expr) -> const char* {
 						static std::string buffer;

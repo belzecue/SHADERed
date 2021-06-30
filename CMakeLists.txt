@@ -3,9 +3,7 @@ set(CMAKE_CXX_STANDARD 17)
 project(SHADERed)
 
 set(CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
-set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/bin")
-
-option(BUILD_IMMEDIATE_MODE "Build the immediate mode related features" OFF)
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 
 # source code
 set(SOURCES
@@ -19,6 +17,7 @@ set(SOURCES
 
 # objects:
 	src/SHADERed/Objects/Export/ExportCPP.cpp
+	src/SHADERed/Objects/Debug/ExpressionCompiler.cpp
 	src/SHADERed/Objects/ArcBallCamera.cpp
 	src/SHADERed/Objects/AudioAnalyzer.cpp
 	src/SHADERed/Objects/AudioShaderStream.cpp
@@ -26,8 +25,10 @@ set(SOURCES
 	src/SHADERed/Objects/CommandLineOptionParser.cpp
 	src/SHADERed/Objects/DefaultState.cpp
 	src/SHADERed/Objects/DebugInformation.cpp
+	src/SHADERed/Objects/DebugAdapterProtocol.cpp
 	src/SHADERed/Objects/FirstPersonCamera.cpp
 	src/SHADERed/Objects/FunctionVariableManager.cpp
+	src/SHADERed/Objects/FrameAnalysis.cpp
 	src/SHADERed/Objects/GizmoObject.cpp
 	src/SHADERed/Objects/ShaderCompiler.cpp
 	src/SHADERed/Objects/KeyboardShortcuts.cpp
@@ -54,12 +55,14 @@ set(SOURCES
 	src/SHADERed/UI/Tools/VariableValueEdit.cpp
 	src/SHADERed/UI/Tools/DebuggerOutline.cpp
 	src/SHADERed/UI/Tools/NotificationSystem.cpp
+	src/SHADERed/UI/Tools/Texture3DPreview.cpp
 
 # UI Debug
 	src/SHADERed/UI/Debug/AutoUI.cpp
 	src/SHADERed/UI/Debug/BreakpointListUI.cpp
 	src/SHADERed/UI/Debug/FunctionStackUI.cpp
 	src/SHADERed/UI/Debug/GeometryOutputUI.cpp
+	src/SHADERed/UI/Debug/TessellationControlOutputUI.cpp
 	src/SHADERed/UI/Debug/ImmediateUI.cpp
 	src/SHADERed/UI/Debug/ValuesUI.cpp
 	src/SHADERed/UI/Debug/WatchUI.cpp
@@ -78,8 +81,11 @@ set(SOURCES
 	src/SHADERed/UI/PixelInspectUI.cpp
 	src/SHADERed/UI/PreviewUI.cpp
 	src/SHADERed/UI/PropertyUI.cpp
+	src/SHADERed/UI/FrameAnalysisUI.cpp
+	src/SHADERed/UI/ProfilerUI.cpp
 
 # engine:
+	src/SHADERed/Engine/AudioPlayer.cpp
 	src/SHADERed/Engine/Timer.cpp
 	src/SHADERed/Engine/Model.cpp
 	src/SHADERed/Engine/GLUtils.cpp
@@ -102,9 +108,22 @@ set(SOURCES
 	libs/pugixml/src/pugixml.cpp
 	libs/ShaderExpressionParser/Parser.cpp
 	libs/ShaderExpressionParser/Tokenizer.cpp
-	libs/ImGuiFileDialog/ImGuiFileDialog.cpp
+	libs/misc/ImFileDialog.cpp
+	libs/misc/dds.c
 )
 
+# add header files
+file(GLOB SHADERED_HEADERS 
+		src/SHADERed/*.h
+		src/SHADERed/Engine/*.h
+		src/SHADERed/Objects/*.h
+		src/SHADERed/Objects/Debug/*.h
+		src/SHADERed/Objects/Export/*.h
+		src/SHADERed/Objects/PluginAPI/*.h 
+		src/SHADERed/UI/*.h
+		src/SHADERed/UI/Tools/*.h
+		src/SHADERed/UI/Debug/*.h
+)
 
 if(WIN32)
 	set(SOURCES
@@ -141,17 +160,8 @@ find_package(GLEW REQUIRED)
 # glm
 find_package(GLM REQUIRED)
 
-# sfml audio
-find_package(SFML COMPONENTS system audio network)
-
 # SpvGenTwo
-if(BUILD_IMMEDIATE_MODE)
-	set(SOURCES
-		"${SOURCES}"
-		src/SHADERed/Objects/Debug/ExpressionCompiler.cpp
-	)
-	add_subdirectory(libs/SpvGenTwo)
-endif()
+add_subdirectory(libs/SpvGenTwo)
 
 # assimp
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "Static lib" FORCE)
@@ -160,18 +170,6 @@ set(ASSIMP_BUILD_TESTS OFF CACHE BOOL "Build tests" FORCE)
 set(ASSIMP_WERROR OFF CACHE BOOL "Warnings as errors" FORCE)
 add_subdirectory(libs/assimp)
 
-# spirv-headers
-set(SPIRV_HEADERS_SKIP_EXAMPLES ON CACHE BOOL "Skip example" FORCE)
-add_subdirectory(libs/spirv-headers)
-
-# spirv-tools
-set(SPIRV_BUILD_FUZZER OFF CACHE BOOL "Build the spirv-fuzz tool" FORCE)
-set(SPIRV_COLOR_TERMINAL OFF CACHE BOOL "Enables color console output" FORCE)
-set(SPIRV_SKIP_TESTS ON CACHE BOOL "Build only the library and the command line tools" FORCE)
-set(SPIRV_SKIP_EXECUTABLES ON CACHE BOOL "Build only the library" FORCE)
-set(SPIRV_WERROR OFF CACHE BOOL "Forces a compilation error on any warnings encountered" FORCE)
-add_subdirectory(libs/spirv-tools)
-
 # glslang
 set(ENABLE_SPVREMAPPER OFF CACHE BOOL "Enables building of SPVRemapper" FORCE)
 set(ENABLE_GLSLANG_BINARIES OFF CACHE BOOL "Builds glslangValidator and spirv-remap" FORCE)
@@ -179,6 +177,12 @@ add_subdirectory(libs/glslang)
 
 # SPIRV-VM
 add_subdirectory(libs/SPIRV-VM)
+
+# cppdap
+set(CPPDAP_DIR libs/cppdap)
+set(CPPDAP_THIRD_PARTY_DIR libs)
+set(CPPDAP_JSON_DIR ${CMAKE_CURRENT_SOURCE_DIR}/libs/json)
+add_subdirectory(${CPPDAP_DIR})
 
 # Native macOS frameworks
 if (APPLE)
@@ -190,7 +194,7 @@ if (APPLE)
 endif()
 
 # create executable
-add_executable(SHADERed ${SOURCES})
+add_executable(SHADERed ${SOURCES} ${SHADERED_HEADERS})
 
 # properties
 set_target_properties(SHADERed PROPERTIES
@@ -198,32 +202,15 @@ set_target_properties(SHADERed PROPERTIES
     CXX_STANDARD_REQUIRED YES
 )
 
-# preprocessor
-if (BUILD_IMMEDIATE_MODE)
-	target_compile_definitions(SHADERed PRIVATE BUILD_IMMEDIATE_MODE)
-endif()
-
 # include directories
-target_include_directories(SHADERed PRIVATE ${SDL2_INCLUDE_DIRS} ${GLM_INCLUDE_DIRS} ${GLEW_INCLUDE_DIRS} ${OPENGL_INCLUDE_DIRS} ${ASSIMP_INCLUDE_DIR} ${SFML_INCLUDE_DIR})
+target_include_directories(SHADERed PRIVATE ${SDL2_INCLUDE_DIRS} ${GLM_INCLUDE_DIRS} ${GLEW_INCLUDE_DIRS} ${OPENGL_INCLUDE_DIRS} ${ASSIMP_INCLUDE_DIR})
 target_include_directories(SHADERed PRIVATE src libs libs/glslang libs/SPIRV-VM/inc)
 if (NOT WIN32)
 	target_include_directories(SHADERed PRIVATE ${GTK_INCLUDE_DIRS})
 endif()
 
 # link libraries
-target_link_libraries(SHADERed ${OPENGL_LIBRARIES} ${GLM_LIBRARY_DIRS} glslang SPIRV SPIRVVM assimp::assimp)
-
-# link SpvGenTwo
-if (BUILD_IMMEDIATE_MODE)
-	target_link_libraries(SHADERed SpvGenTwoLib SpvGenTwoCommon)
-endif()
-
-# link sfml
-if(${USE_FINDSFML})
-	target_link_libraries(SHADERed ${SFML_LIBRARIES})
-else()
-	target_link_libraries(SHADERed sfml-audio sfml-system sfml-network)
-endif()
+target_link_libraries(SHADERed ${OPENGL_LIBRARIES} ${GLM_LIBRARY_DIRS} glslang SPIRV SPIRVVM assimp::assimp SpvGenTwoLib SpvGenTwoCommon cppdap)
 
 if(WIN32)
 	# link specific win32 libraries
@@ -234,7 +221,7 @@ elseif(UNIX AND NOT APPLE)
 	target_link_libraries(SHADERed ${GLEW_LIBRARIES} ${SDL2_LIBRARIES} ${GTK_LIBRARIES} ${CMAKE_DL_LIBS})
 
 	if (NOT DONT_LINK_FILESYSTEM)
-		target_link_libraries(SHADERed stdc++fs)
+		target_link_libraries(SHADERed stdc++fs pthread m dl)
 	endif()
 elseif(APPLE)
 	target_link_libraries(SHADERed GLEW::GLEW ${SDL2_LIBRARIES} ${GTK_LIBRARIES} ${CMAKE_DL_LIBS})
@@ -252,6 +239,7 @@ install(DIRECTORY bin/data bin/templates bin/themes bin/plugins DESTINATION "${R
 if (UNIX AND NOT APPLE)
 	# install XDG desktop file and icon on Linux/BSD
 	install(FILES Misc/Linux/org.shadered.SHADERed.desktop DESTINATION "share/applications" RENAME shadered.desktop)
+	install(FILES Misc/Icon/icon.svg DESTINATION "share/pixmaps" RENAME shadered.svg)
 	install(FILES bin/icon_32x32.png DESTINATION "share/icons/hicolor/32x32/apps" RENAME shadered.png)
 	install(FILES bin/icon_64x64.png DESTINATION "share/icons/hicolor/64x64/apps" RENAME shadered.png)
 	install(FILES bin/icon_128x128.png DESTINATION "share/icons/hicolor/128x128/apps" RENAME shadered.png)

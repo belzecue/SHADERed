@@ -16,8 +16,8 @@
 #include <thread>
 #include <string>
 
-#include <stb/stb_image.h>
-#include <stb/stb_image_write.h>
+#include <misc/stb_image.h>
+#include <misc/stb_image_write.h>
 
 #if defined(__linux__) || defined(__unix__)
 #include <libgen.h>
@@ -43,8 +43,6 @@ void SetDpiAware();
 
 int main(int argc, char* argv[])
 {
-	bool run = true; // should we enter the infinite loop?
-
 	srand(time(NULL));
 	
 	std::error_code fsError;
@@ -69,29 +67,7 @@ int main(int argc, char* argv[])
 
 	ed::CommandLineOptionParser coptsParser;
 	coptsParser.Parse(cmdDir, argc - 1, argv + 1);
-
-	// --compile
-	if (!coptsParser.CompilePath.empty()) {
-		std::vector<unsigned int> spv;
-		std::vector<ed::ShaderMacro> macros;
-		bool status = ed::ShaderCompiler::CompileToSPIRV(spv, coptsParser.CompileLanguage, coptsParser.CompilePath, coptsParser.CompileStage, coptsParser.CompileEntry, macros, nullptr, nullptr);
-		if (!status) {
-			printf("Failed to compile the shader.\n");
-		} else {
-			if (coptsParser.CompileSPIRV) {
-				std::ofstream spvOut(coptsParser.CompileOutput, std::ios::out | std::ios::binary);
-				spvOut.write((char*)spv.data(), spv.size() * sizeof(unsigned int));
-				spvOut.close();
-			} else {
-				std::string glslSource = ed::ShaderCompiler::ConvertToGLSL(spv, coptsParser.CompileLanguage, coptsParser.CompileStage, false, nullptr);
-
-				std::ofstream glslOut(coptsParser.CompileOutput, std::ios::out | std::ios::binary);
-				glslOut.write(glslSource.c_str(), glslSource.size());
-				glslOut.close();
-			}
-			printf("Done compiling.");
-		}
-	}
+	coptsParser.Execute();
 
 	if (!coptsParser.LaunchUI)
 		return 0;
@@ -102,11 +78,13 @@ int main(int argc, char* argv[])
 	// currently the only supported argument is a path to set the working directory... dont do this check if user wants to explicitly set the working directory,
 	// TODO: if more arguments get added, use different methods to check if working directory is being set explicitly
 	{
-		char result[PATH_MAX];
+		char result[PATH_MAX + 1];
 		ssize_t readlinkRes = readlink("/proc/self/exe", result, PATH_MAX);
 		std::string exePath = "";
-		if (readlinkRes != -1)
+		if (readlinkRes > 0) {
+			result[readlinkRes] = '\0';
 			exePath = std::string(dirname(result));
+		}
 		
 		std::vector<std::string> toCheck = {
 			"/../share/SHADERed",
@@ -225,7 +203,8 @@ int main(int argc, char* argv[])
 	SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1); // double buffering
 
 	Uint32 windowFlags = SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI;
-	
+
+	bool run = true; // should we enter the infinite loop?
 	// make the window invisible if only rendering to a file
 	if (coptsParser.Render) {
 		windowFlags = SDL_WINDOW_OPENGL | SDL_WINDOW_HIDDEN;
@@ -264,6 +243,7 @@ int main(int argc, char* argv[])
 	ed::Logger::Get().Log("Creating EditorEngine...");
 	engine.Create();
 	ed::Logger::Get().Log("Created EditorEngine");
+	engine.Interface().Run = run;
 
 	// set window icon:
 	SetIcon(wnd);
@@ -271,6 +251,7 @@ int main(int argc, char* argv[])
 	engine.UI().SetCommandLineOptions(coptsParser);
 	engine.UI().SetPerformanceMode(perfMode);
 	engine.Interface().Renderer.AllowComputeShaders(GLEW_ARB_compute_shader);
+	engine.Interface().Renderer.AllowTessellationShaders(GLEW_ARB_tessellation_shader);
 
 	// check for filesystem errors
 	if (fsError)
@@ -288,12 +269,16 @@ int main(int argc, char* argv[])
 		engine.UI().SavePreviewToFile();
 	}
 
+	// start the DAP server
+	if (coptsParser.StartDAPServer)
+		engine.Interface().DAP.Initialize();
+
 	// timer for time delta
 	ed::eng::Timer timer;
 	SDL_Event event;
 	bool minimized = false;
 	bool hasFocus = true;
-	while (run) {
+	while (engine.Interface().Run) {
 		while (SDL_PollEvent(&event)) {
 			if (event.type == SDL_QUIT) {
 				bool cont = true;
@@ -304,7 +289,7 @@ int main(int argc, char* argv[])
 				}
 
 				if (cont) {
-					run = false;
+					engine.Interface().Run = false;
 					ed::Logger::Get().Log("Received SDL_QUIT event -> quitting");
 				}
 			} else if (event.type == SDL_WINDOWEVENT) {
@@ -351,7 +336,7 @@ int main(int argc, char* argv[])
 			engine.OnEvent(event);
 		}
 
-		if (!run) break;
+		if (!engine.Interface().Run) break;
 
 		float delta = timer.Restart();
 		engine.Update(delta);

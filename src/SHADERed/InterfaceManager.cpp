@@ -47,6 +47,8 @@ namespace ed {
 			, Objects(&Parser, &Renderer)
 			, Parser(&Pipeline, &Objects, &Renderer, &Plugins, &Messages, &Debugger, gui)
 			, Debugger(&Objects, &Renderer, &Messages)
+			, Analysis(&Debugger, &Renderer, &Pipeline, &Objects, &Messages)
+			, DAP(&Debugger, gui, &Run)
 	{
 		m_ui = gui;
 	}
@@ -57,6 +59,7 @@ namespace ed {
 	}
 	void InterfaceManager::DebugClick(glm::vec2 r)
 	{
+		DAP.StopDebugging();
 		Debugger.ClearPixelList();
 
 		if (!m_canDebug())
@@ -195,9 +198,12 @@ namespace ed {
 			pxInfo.InTopology = pxInfo.OutTopology = objTopology;
 			pxInfo.InstanceBuffer = instanceBuffer;
 			pxInfo.GeometryShaderUsed = false;
+			pxInfo.TessellationShaderUsed = false;
 
-			if (pxInfo.Pass && pxInfo.Pass->Type == PipelineItem::ItemType::ShaderPass)
+			if (pxInfo.Pass && pxInfo.Pass->Type == PipelineItem::ItemType::ShaderPass) {
 				pxInfo.GeometryShaderUsed = ((pipe::ShaderPass*)pxInfo.Pass->Data)->GSUsed;
+				pxInfo.TessellationShaderUsed = ((pipe::ShaderPass*)pxInfo.Pass->Data)->TSUsed;
+			}
 
 			if (Settings::Instance().Debug.AutoFetch)
 				FetchPixel(pxInfo);
@@ -231,6 +237,15 @@ namespace ed {
 		}
 
 		memcpy(pixel.FinalPosition, pixel.VertexShaderPosition, sizeof(glm::vec4) * 3);
+
+		// run the tessellation shader if needed
+		if (pixel.TessellationShaderUsed) {
+			Debugger.PrepareTessellationControlShader(pixel.Pass, pixel.Object);
+			Debugger.SetTessellationControlShaderInput(pixel);
+			for (int iid = 0; iid < pixel.VertexCount; iid++)
+				Debugger.ExecuteTessellationControlShader(iid);
+			Debugger.CopyTessellationControlShaderOutput();
+		}
 
 		// run the geometry shader if needed
 		if (pixel.GeometryShaderUsed) {
@@ -440,6 +455,14 @@ namespace ed {
 
 				if (pass->GSUsed) {
 					plugin = ed::ShaderCompiler::GetPluginLanguageFromExtension(&langID, pass->GSPath, Plugins.Plugins());
+					ret &= (plugin != nullptr && plugin->CustomLanguage_IsDebuggable(langID)) || plugin == nullptr;
+				}
+
+				if (pass->TSUsed) {
+					plugin = ed::ShaderCompiler::GetPluginLanguageFromExtension(&langID, pass->TCSPath, Plugins.Plugins());
+					ret &= (plugin != nullptr && plugin->CustomLanguage_IsDebuggable(langID)) || plugin == nullptr;	
+				
+					plugin = ed::ShaderCompiler::GetPluginLanguageFromExtension(&langID, pass->TESPath, Plugins.Plugins());
 					ret &= (plugin != nullptr && plugin->CustomLanguage_IsDebuggable(langID)) || plugin == nullptr;
 				}
 			} else if (i->Type == PipelineItem::ItemType::ComputePass) {

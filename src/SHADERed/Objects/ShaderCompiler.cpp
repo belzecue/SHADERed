@@ -9,11 +9,19 @@
 #include <SHADERed/Objects/Logger.h>
 #include <SHADERed/Objects/Settings.h>
 #include <SHADERed/Objects/ShaderCompiler.h>
+
 #include <glslang/SPIRV/GlslangToSpv.h>
 #include <glslang/StandAlone/DirStackFileIncluder.h>
 #include <glslang/glslang/Public/ShaderLang.h>
+
 #include <SPIRVCross/spirv_cross_util.hpp>
 #include <SPIRVCross/spirv_glsl.hpp>
+
+#include <spvgentwo/Module.h>
+#include <spvgentwo/Grammar.h>
+#include <common/HeapAllocator.h>
+#include <common/BinaryFileReader.h>
+#include <common/ModulePrinter.h>
 
 const TBuiltInResource DefaultTBuiltInResource = {
 	/* .MaxLights = */ 32,
@@ -125,7 +133,7 @@ const TBuiltInResource DefaultTBuiltInResource = {
 };
 
 namespace ed {
-	std::string ShaderCompiler::ConvertToGLSL(const std::vector<unsigned int>& spvIn, ShaderLanguage inLang, ShaderStage sType, bool gsUsed, MessageStack* msgs)
+	std::string ShaderCompiler::ConvertToGLSL(const std::vector<unsigned int>& spvIn, ShaderLanguage inLang, ShaderStage sType, bool tsUsed, bool gsUsed, MessageStack* msgs, bool convertNames)
 	{
 		if (spvIn.empty())
 			return "";
@@ -153,6 +161,10 @@ namespace ed {
 			model = spv::ExecutionModelGeometry;
 		else if (sType == ShaderStage::Compute)
 			model = spv::ExecutionModelGLCompute;
+		else if (sType == ShaderStage::TessellationControl)
+			model = spv::ExecutionModelTessellationControl;
+		else if (sType == ShaderStage::TessellationEvaluation)
+			model = spv::ExecutionModelTessellationEvaluation;
 		for (auto& e : entry_points) {
 			if (e.execution_model == model) {
 				entry_point = e.name;
@@ -167,24 +179,36 @@ namespace ed {
 		// rename outputs
 		spirv_cross::ShaderResources resources = glsl.get_shader_resources();
 		std::string outputName = "outputVS";
-		if (sType == ShaderStage::Pixel)
-			outputName = "outputPS";
+		if (sType == ShaderStage::TessellationControl)
+			outputName = "outputTCS";
+		else if (sType == ShaderStage::TessellationEvaluation)
+			outputName = "outputTES";
 		else if (sType == ShaderStage::Geometry)
 			outputName = "outputGS";
-		for (auto& resource : resources.stage_outputs) {
-			uint32_t resID = glsl.get_decoration(resource.id, spv::DecorationLocation);
-			glsl.set_name(resource.id, outputName + std::to_string(resID));
+		else if (sType == ShaderStage::Pixel)
+			outputName = "outputPS";
+		if (convertNames) {
+			for (auto& resource : resources.stage_outputs) {
+				uint32_t resID = glsl.get_decoration(resource.id, spv::DecorationLocation);
+				glsl.set_name(resource.id, outputName + std::to_string(resID));
+			}
 		}
 
 		// rename inputs
 		std::string inputName = "inputVS";
 		if (sType == ShaderStage::Pixel)
-			inputName = gsUsed ? "outputGS" : "outputVS";
+			inputName = gsUsed ? "outputGS" : (tsUsed ? "outputTES" : "outputVS");
 		else if (sType == ShaderStage::Geometry)
+			inputName = tsUsed ? "outputTES" : "outputVS";
+		else if (sType == ShaderStage::TessellationControl)
 			inputName = "outputVS";
-		for (auto& resource : resources.stage_inputs) {
-			uint32_t resID = glsl.get_decoration(resource.id, spv::DecorationLocation);
-			glsl.set_name(resource.id, inputName + std::to_string(resID));
+		else if (sType == ShaderStage::TessellationEvaluation)
+			inputName = "outputTCS";
+		if (convertNames) {
+			for (auto& resource : resources.stage_inputs) {
+				uint32_t resID = glsl.get_decoration(resource.id, spv::DecorationLocation);
+				glsl.set_name(resource.id, inputName + std::to_string(resID));
+			}
 		}
 
 		// Compile to GLSL
@@ -255,7 +279,7 @@ namespace ed {
 			bool inUBO = false;
 			std::vector<std::string> uboNames;
 			int deleteUboPos = 0, deleteUboLength = 0;
-			std::string uboExt = (sType == ShaderStage::Vertex) ? "VS" : (sType == ShaderStage::Pixel ? "PS" : "GS");
+			std::string uboExt = (sType == ShaderStage::Vertex) ? "VS" : (sType == ShaderStage::Pixel ? "PS" : (sType == ShaderStage::TessellationControl ?  "TCS" : (sType == ShaderStage::TessellationEvaluation ? "TES" : "GS")));
 			while (std::getline(ss, line)) {
 
 				// i know, ewww, but idk if there's a function to do this (this = converting UBO
@@ -365,6 +389,10 @@ namespace ed {
 			shaderType = EShLangFragment;
 		else if (sType == ShaderStage::Geometry)
 			shaderType = EShLangGeometry;
+		else if (sType == ShaderStage::TessellationControl)
+			shaderType = EShLangTessControl;
+		else if (sType == ShaderStage::TessellationEvaluation)
+			shaderType = EShLangTessEvaluation;
 		else if (sType == ShaderStage::Compute)
 			shaderType = EShLangCompute;
 
@@ -377,6 +405,8 @@ namespace ed {
 
 		// set macros
 		std::string preambleStr = (inLang == ShaderLanguage::HLSL) ? "#extension GL_GOOGLE_include_directive : enable\n" : "";
+		if (inLang == ShaderLanguage::HLSL && (sType == ShaderStage::TessellationControl || sType == ShaderStage::TessellationEvaluation))
+			preambleStr += "#extension GL_EXT_debug_printf : enable\n";
 
 #ifdef SHADERED_WEB
 		preambleStr += "#define SHADERED_WEB\n";
@@ -446,10 +476,20 @@ namespace ed {
 		// link
 		glslang::TProgram prog;
 		prog.addShader(&shader);
-
+		
 		if (!prog.link(messages)) {
-			if (msgs != nullptr)
+			if (msgs != nullptr) {
 				msgs->Add(MessageStack::Type::Error, msgs->CurrentItem, "Shader linking failed", -1, sType);
+				
+				const char* infoLog = prog.getInfoLog();
+				if (infoLog != nullptr) {
+					std::string info(infoLog);
+					size_t errorLoc = info.find("ERROR:");
+					size_t errorEnd = info.find("\n", errorLoc+1);
+					if (errorLoc != std::string::npos && errorEnd != std::string::npos)
+						msgs->Add(MessageStack::Type::Error, msgs->CurrentItem, info.substr(errorLoc+7, errorEnd-errorLoc-7), -1, sType);
+				}
+			}
 			return false;
 		}
 
@@ -505,5 +545,71 @@ namespace ed {
 				return ShaderLanguage::Plugin;
 
 		return ShaderLanguage::GLSL;
+	}
+
+	
+
+	class BinaryVectorReader : public spvgentwo::IReader {
+	public:
+		BinaryVectorReader(std::vector<unsigned int>& spv)
+		{
+			m_spv = &spv;
+		}
+		bool get(unsigned int& _word) 
+		{
+			if (m_spv && m_pos < m_spv->size()) {
+				_word = m_spv->at(m_pos++);
+				return true;
+			}
+			return false;
+		}
+	private:
+		std::vector<unsigned int>* m_spv;
+		spvgentwo::sgt_size_t m_pos = 0u;
+	};
+	bool ShaderCompiler::DisassembleSPIRV(spvgentwo::IReader& reader, spvgentwo::String& out, spvgentwo::HeapAllocator& alloc, bool useColorCodes)
+	{
+		spvgentwo::Module module(&alloc);
+		spvgentwo::Grammar gram(&alloc);
+
+		if (!module.read(reader, gram))
+			return false;
+
+		if (!module.resolveIDs())
+			return false;
+
+		if (!module.reconstructTypeAndConstantInfo())
+			return false;
+
+		if (!module.reconstructNames())
+			return false;
+
+		spvgentwo::ModulePrinter::ModuleStringPrinter printer(out, useColorCodes);
+		spvgentwo::ModulePrinter::printModule(module, gram, printer);
+		
+		return true;
+	}
+	bool ShaderCompiler::DisassembleSPIRV(std::vector<unsigned int>& spv, std::string& out, bool useColorCodes)
+	{
+		BinaryVectorReader reader(spv);
+
+		spvgentwo::HeapAllocator alloc;
+		spvgentwo::String buffer(&alloc);
+
+		bool ret = ShaderCompiler::DisassembleSPIRV(reader, buffer, alloc, useColorCodes);
+		if (ret)
+			out = std::string(buffer.c_str());
+		return ret;
+	}
+	bool ShaderCompiler::DisassembleSPIRVFromFile(const std::string& filename, std::string& out, bool useColorCodes)
+	{
+		spvgentwo::HeapAllocator alloc;
+		spvgentwo::BinaryFileReader reader(alloc, filename.c_str());
+		spvgentwo::String buffer(&alloc);
+
+		bool ret = ShaderCompiler::DisassembleSPIRV(reader, buffer, alloc, useColorCodes);
+		if (ret)
+			out = std::string(buffer.c_str());
+		return ret;
 	}
 }

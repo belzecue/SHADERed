@@ -96,6 +96,8 @@ namespace ed {
 			, m_rtDepth(0)
 			, m_fbosNeedUpdate(false)
 			, m_computeSupported(true)
+			, m_tessellationSupported(true)
+			, m_tessMaxPatchVertices(0)
 			, m_wasMultiPick(false)
 	{
 		m_paused = false;
@@ -132,7 +134,7 @@ namespace ed {
 			m_lastSize = glm::vec2(width, height);
 
 			glBindTexture(GL_TEXTURE_2D, m_rtColor);
-			glTexImage2D(GL_TEXTURE_2D, 0, Settings::Instance().Project.UseAlphaChannel ? GL_RGBA : GL_RGB, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+			glTexImage2D(GL_TEXTURE_2D, 0, Settings::Instance().Project.UseAlphaChannel ? GL_RGBA32F : GL_RGB32F, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
 			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
 			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
 			glBindTexture(GL_TEXTURE_2D, 0);
@@ -174,13 +176,46 @@ namespace ed {
 
 		m_plugins->BeginRender();
 
+		// check if we need to perform performance measurement
+		bool performPerfMeasure = Settings::Instance().General.Profiler && m_lastPerfMeasure.GetElapsedTime() > 0.4f;
+		if (performPerfMeasure) {
+			bool isAllDone = true;
+			unsigned long long totalTime = 0;
+
+			for (int i = 0; i < m_perfTimers.size(); i++) {
+				if (!m_perfTimers[i].IsDone) {
+					isAllDone = false;
+
+					int queryDone = 0;
+					glGetQueryObjectiv(m_perfTimers[i].Object, GL_QUERY_RESULT_AVAILABLE, &queryDone);
+
+					if (queryDone) {
+						glGetQueryObjectui64v(m_perfTimers[i].Object, GL_QUERY_RESULT, &m_perfTimers[i].LastTime);
+						m_perfTimers[i].IsDone = true;
+					}
+				}
+				totalTime += m_perfTimers[i].LastTime;
+			}
+			
+			m_totalPerfTime = totalTime;
+			performPerfMeasure &= isAllDone;
+
+			if (performPerfMeasure)
+				m_lastPerfMeasure.Restart();
+		}
+
 		for (int i = 0; i < m_items.size(); i++) {
 			PipelineItem* it = m_items[i];
+
+			if (performPerfMeasure) {
+				glBeginQuery(GL_TIME_ELAPSED, m_perfTimers[i].Object);
+				m_perfTimers[i].IsDone = false;
+			}
 
 			if (it->Type == PipelineItem::ItemType::ShaderPass) {
 				pipe::ShaderPass* data = (pipe::ShaderPass*)it->Data;
 
-				if (!data->Active || data->Items.size() <= 0 || data->RTCount == 0 /* || (isDebug && data->GSUsed) */)
+				if (!data->Active || data->Items.size() <= 0 || data->RTCount == 0)
 					continue;
 
 				const std::vector<GLuint>& srvs = m_objects->GetBindList(m_items[i]);
@@ -191,6 +226,9 @@ namespace ed {
 
 				if (m_shaders[i] == 0)
 					continue;
+
+				if (data->TSUsed && m_tessellationSupported) 
+					glPatchParameteri(GL_PATCH_VERTICES, data->TSPatchVertices);
 
 				// bind fbo and buffers
 				glBindFramebuffer(GL_FRAMEBUFFER, isMSAA ? m_fboMS[data] : data->FBO);
@@ -259,7 +297,7 @@ namespace ed {
 					glActiveTexture(GL_TEXTURE0 + j);
 					if (srvData->Type == ObjectType::CubeMap)
 						glBindTexture(GL_TEXTURE_CUBE_MAP, srvs[j]);
-					else if (srvData->Type == ObjectType::Image3D)
+					else if (srvData->Type == ObjectType::Image3D || srvData->Type == ObjectType::Texture3D)
 						glBindTexture(GL_TEXTURE_3D, srvs[j]);
 					else if (srvData->Type == ObjectType::PluginObject) {
 						PluginObject* pobj = srvData->Plugin;
@@ -465,7 +503,7 @@ namespace ed {
 					glActiveTexture(GL_TEXTURE0 + j);
 					if (srvData->Type == ObjectType::CubeMap)
 						glBindTexture(GL_TEXTURE_CUBE_MAP, srvs[j]);
-					else if (srvData->Type == ObjectType::Image3D)
+					else if (srvData->Type == ObjectType::Image3D || srvData->Type == ObjectType::Texture3D)
 						glBindTexture(GL_TEXTURE_3D, srvs[j]);
 					else if (srvData->Type == ObjectType::PluginObject) {
 						PluginObject* pobj = srvData->Plugin;
@@ -523,7 +561,7 @@ namespace ed {
 					glActiveTexture(GL_TEXTURE0 + j);
 					if (srvData->Type == ObjectType::CubeMap)
 						glBindTexture(GL_TEXTURE_CUBE_MAP, srvs[j]);
-					else if (srvData->Type == ObjectType::Image3D)
+					else if (srvData->Type == ObjectType::Image3D || srvData->Type == ObjectType::Texture3D)
 						glBindTexture(GL_TEXTURE_3D, srvs[j]);
 					else if (srvData->Type == ObjectType::PluginObject) {
 						PluginObject* pobj = srvData->Plugin;
@@ -542,7 +580,7 @@ namespace ed {
 				// bind variables
 				data->Variables.Bind();
 
-				data->Stream.renderAudio();
+				data->Stream.RenderAudio();
 			}
 			else if (it->Type == PipelineItem::ItemType::PluginItem) {
 				pipe::PluginItemData* pldata = reinterpret_cast<pipe::PluginItemData*>(it->Data);
@@ -552,6 +590,9 @@ namespace ed {
 				else if (pldata->Owner->PipelineItem_IsDebuggable(pldata->Type, pldata->PluginData))
 					pldata->Owner->PipelineItem_DebugExecute(pldata->Type, pldata->PluginData, pldata->Items.data(), pldata->Items.size(), &debugID);
 			}
+
+			if (performPerfMeasure)
+				glEndQuery(GL_TIME_ELAPSED);
 
 			if (it == breakItem && breakItem != nullptr)
 				break;
@@ -641,7 +682,7 @@ namespace ed {
 				glActiveTexture(GL_TEXTURE0 + j);
 				if (srvData->Type == ObjectType::CubeMap)
 					glBindTexture(GL_TEXTURE_CUBE_MAP, srvs[j]);
-				else if (srvData->Type == ObjectType::Image3D)
+				else if (srvData->Type == ObjectType::Image3D || srvData->Type == ObjectType::Texture3D)
 					glBindTexture(GL_TEXTURE_3D, srvs[j]);
 				else if (srvData->Type == ObjectType::PluginObject) {
 					PluginObject* pobj = srvData->Plugin;
@@ -892,7 +933,7 @@ namespace ed {
 				glActiveTexture(GL_TEXTURE0 + j);
 				if (srvData->Type == ObjectType::CubeMap)
 					glBindTexture(GL_TEXTURE_CUBE_MAP, srvs[j]);
-				else if (srvData->Type == ObjectType::Image3D)
+				else if (srvData->Type == ObjectType::Image3D || srvData->Type == ObjectType::Texture3D)
 					glBindTexture(GL_TEXTURE_3D, srvs[j]);
 				else if (srvData->Type == ObjectType::PluginObject) {
 					PluginObject* pobj = srvData->Plugin;
@@ -1034,9 +1075,9 @@ namespace ed {
 				pipe::AudioPass* pass = (pipe::AudioPass*)itemList[i]->Data;
 
 				if (m_paused)
-					pass->Stream.pause();
+					pass->Stream.Stop();
 				else
-					pass->Stream.play();
+					pass->Stream.Start();
 			}
 		}
 
@@ -1051,12 +1092,13 @@ namespace ed {
 
 		m_plugins->HandleApplicationEvent(plugin::ApplicationEvent::PipelineItemCompiled, (void*)name, nullptr);
 
-		int d3dCounter = 0;
+		GLchar shaderMessage[1024] = { 0 };
 		for (int i = 0; i < m_items.size(); i++) {
 			PipelineItem* item = m_items[i];
 			if (strcmp(item->Name, name) == 0) {
 				if (item->Type == PipelineItem::ItemType::ShaderPass) {
 					pipe::ShaderPass* shader = (pipe::ShaderPass*)item->Data;
+					int shaderMessagesBefore = m_msgs->GetGroupErrorAndWarningMsgCount(name);
 
 					SPIRVQueue.push_back(item);
 
@@ -1065,6 +1107,8 @@ namespace ed {
 					glDeleteShader(m_shaderSources[i].VS);
 					glDeleteShader(m_shaderSources[i].PS);
 					glDeleteShader(m_shaderSources[i].GS);
+					glDeleteShader(m_shaderSources[i].TCS);
+					glDeleteShader(m_shaderSources[i].TES);
 
 					std::string psContent = "", vsContent = "",
 								vsEntry = shader->VSEntry,
@@ -1073,6 +1117,8 @@ namespace ed {
 					ShaderLanguage psLang = ShaderCompiler::GetShaderLanguageFromExtension(shader->PSPath);
 					ShaderLanguage vsLang = ShaderCompiler::GetShaderLanguageFromExtension(shader->VSPath);
 					ShaderLanguage gsLang = ShaderCompiler::GetShaderLanguageFromExtension(shader->GSPath);
+					ShaderLanguage tcsLang = ShaderCompiler::GetShaderLanguageFromExtension(shader->TCSPath);
+					ShaderLanguage tesLang = ShaderCompiler::GetShaderLanguageFromExtension(shader->TESPath);
 
 					// pixel shader
 					bool psCompiled = false;
@@ -1087,7 +1133,7 @@ namespace ed {
 						m_includeCheck(psContent, std::vector<std::string>(), lineBias);
 						m_applyMacros(psContent, shader);
 					} else { // HLSL / VK
-						psContent = ShaderCompiler::ConvertToGLSL(shader->PSSPV, psLang, ShaderStage::Pixel, shader->GSUsed, m_msgs);
+						psContent = ShaderCompiler::ConvertToGLSL(shader->PSSPV, psLang, ShaderStage::Pixel, shader->TSUsed, shader->GSUsed, m_msgs);
 						psEntry = "main";
 
 						if (psLang == ShaderLanguage::Plugin)
@@ -1096,7 +1142,7 @@ namespace ed {
 
 					shader->Variables.UpdateTextureList(psContent);
 					GLuint ps = gl::CompileShader(GL_FRAGMENT_SHADER, psContent.c_str());
-					psCompiled &= gl::CheckShaderCompilationStatus(ps);
+					psCompiled &= gl::CheckShaderCompilationStatus(ps, shaderMessage);
 
 					// vertex shader
 					lineBias = 0;
@@ -1113,7 +1159,7 @@ namespace ed {
 						m_includeCheck(vsContent, std::vector<std::string>(), lineBias);
 						m_applyMacros(vsContent, shader);
 					} else { // HLSL / VK
-						vsContent = ShaderCompiler::ConvertToGLSL(shader->VSSPV, vsLang, ShaderStage::Vertex, shader->GSUsed, m_msgs);
+						vsContent = ShaderCompiler::ConvertToGLSL(shader->VSSPV, vsLang, ShaderStage::Vertex, shader->TSUsed, shader->GSUsed, m_msgs);
 						vsEntry = "main";
 
 						if (vsLang == ShaderLanguage::Plugin)
@@ -1121,7 +1167,7 @@ namespace ed {
 					}
 
 					GLuint vs = gl::CompileShader(GL_VERTEX_SHADER, vsContent.c_str());
-					vsCompiled &= gl::CheckShaderCompilationStatus(vs);
+					vsCompiled &= gl::CheckShaderCompilationStatus(vs, shaderMessage);
 
 					// geometry shader
 					bool gsCompiled = true;
@@ -1142,7 +1188,7 @@ namespace ed {
 							m_includeCheck(gsContent, std::vector<std::string>(), lineBias);
 							m_applyMacros(gsContent, shader);
 						} else { // HLSL / VK
-							gsContent = ShaderCompiler::ConvertToGLSL(shader->GSSPV, gsLang, ShaderStage::Geometry, shader->GSUsed, m_msgs);
+							gsContent = ShaderCompiler::ConvertToGLSL(shader->GSSPV, gsLang, ShaderStage::Geometry, shader->TSUsed, shader->GSUsed, m_msgs);
 							gsEntry = "main";
 
 							if (gsLang == ShaderLanguage::Plugin)
@@ -1150,21 +1196,92 @@ namespace ed {
 						}
 
 						gs = gl::CompileShader(GL_GEOMETRY_SHADER, gsContent.c_str());
-						gsCompiled &= gl::CheckShaderCompilationStatus(gs);
+						gsCompiled &= gl::CheckShaderCompilationStatus(gs, shaderMessage);
 
 						if (gsContent.empty())
 							gsCompiled = false;
 					}
 
+					// tessellation shader
+					bool tsCompiled = ((shader->TSUsed && m_tessellationSupported) || !shader->TSUsed);
+					GLuint tcs = 0, tes = 0;
+					if (shader->TSUsed && m_tessellationSupported) {
+						// tess control
+						if (strlen(shader->TCSPath) > 0 && strlen(shader->TCSEntry) > 0) {
+							std::string tcsContent = "",
+										tcsEntry = shader->TCSEntry;
+
+							lineBias = 0;
+
+							if (gsLang == ShaderLanguage::Plugin)
+								tsCompiled &= m_pluginCompileToSpirv(shader->TCSSPV, shader->TCSPath, tcsEntry, plugin::ShaderStage::TessellationControl, shader->Macros.data(), shader->Macros.size());
+							else
+								tsCompiled &= ShaderCompiler::CompileToSPIRV(shader->TCSSPV, tcsLang, shader->TCSPath, ShaderStage::TessellationControl, tcsEntry, shader->Macros, m_msgs, m_project);
+
+							if (tcsLang == ShaderLanguage::GLSL) { // GLSL
+								tcsContent = m_project->LoadProjectFile(shader->TCSPath);
+								m_includeCheck(tcsContent, std::vector<std::string>(), lineBias);
+								m_applyMacros(tcsContent, shader);
+							} else { // HLSL / VK
+								tcsContent = ShaderCompiler::ConvertToGLSL(shader->TCSSPV, gsLang, ShaderStage::TessellationControl, shader->TSUsed, shader->GSUsed, m_msgs);
+								tcsEntry = "main";
+
+								if (tcsLang == ShaderLanguage::Plugin)
+									tcsContent = m_pluginProcessGLSL(shader->TCSPath, tcsContent.c_str());
+							}
+
+							tcs = gl::CompileShader(GL_TESS_CONTROL_SHADER, tcsContent.c_str());
+							tsCompiled &= gl::CheckShaderCompilationStatus(tcs, shaderMessage);
+
+							if (tcsContent.empty())
+								tsCompiled = false;
+						}
+						
+						// tess evaluation
+						if (strlen(shader->TESPath) > 0 && strlen(shader->TESEntry) > 0) {
+							std::string tesContent = "",
+										tesEntry = shader->TESEntry;
+
+							lineBias = 0;
+
+							if (gsLang == ShaderLanguage::Plugin)
+								tsCompiled &= m_pluginCompileToSpirv(shader->TESSPV, shader->TESPath, tesEntry, plugin::ShaderStage::TessellationEvaluation, shader->Macros.data(), shader->Macros.size());
+							else
+								tsCompiled &= ShaderCompiler::CompileToSPIRV(shader->TESSPV, tcsLang, shader->TESPath, ShaderStage::TessellationEvaluation, tesEntry, shader->Macros, m_msgs, m_project);
+
+							if (tesLang == ShaderLanguage::GLSL) { // GLSL
+								tesContent = m_project->LoadProjectFile(shader->TESPath);
+								m_includeCheck(tesContent, std::vector<std::string>(), lineBias);
+								m_applyMacros(tesContent, shader);
+							} else { // HLSL / VK
+								tesContent = ShaderCompiler::ConvertToGLSL(shader->TESSPV, gsLang, ShaderStage::TessellationEvaluation, shader->TSUsed, shader->GSUsed, m_msgs);
+								tesEntry = "main";
+
+								if (tesLang == ShaderLanguage::Plugin)
+									tesContent = m_pluginProcessGLSL(shader->TESPath, tesContent.c_str());
+							}
+
+							tes = gl::CompileShader(GL_TESS_EVALUATION_SHADER, tesContent.c_str());
+							tsCompiled &= gl::CheckShaderCompilationStatus(tes, shaderMessage);
+
+							if (tesContent.empty())
+								tsCompiled = false;
+						}
+					}
+
+
 					if (m_shaders[i] != 0)
 						glDeleteProgram(m_shaders[i]);
 
-					if (!vsCompiled || !psCompiled || !gsCompiled || vsContent.empty() || psContent.empty()) {
+					if (!vsCompiled || !psCompiled || !gsCompiled || !tsCompiled || vsContent.empty() || psContent.empty()) {
 						Logger::Get().Log("Shaders not compiled", true);
 						if (vsContent.empty() || psContent.empty())
 							m_msgs->Add(MessageStack::Type::Error, name, "Shader source empty - try recompiling");
-						else
+						else {
+							if (shaderMessage[0] != 0 && shaderMessagesBefore == m_msgs->GetGroupErrorAndWarningMsgCount(name))
+								m_msgs->Add(MessageStack::Type::Error, name, shaderMessage);
 							m_msgs->Add(MessageStack::Type::Error, name, "Failed to compile the shader(s)");
+						}
 
 						m_shaders[i] = 0;
 					} else {
@@ -1172,8 +1289,10 @@ namespace ed {
 
 						m_shaders[i] = glCreateProgram();
 						glAttachShader(m_shaders[i], vs);
-						glAttachShader(m_shaders[i], ps);
+						if (shader->TSUsed) glAttachShader(m_shaders[i], tcs);
+						if (shader->TSUsed) glAttachShader(m_shaders[i], tes);
 						if (shader->GSUsed) glAttachShader(m_shaders[i], gs);
+						glAttachShader(m_shaders[i], ps);
 						glLinkProgram(m_shaders[i]);
 					}
 
@@ -1183,8 +1302,12 @@ namespace ed {
 					m_shaderSources[i].VS = vs;
 					m_shaderSources[i].PS = ps;
 					m_shaderSources[i].GS = gs;
-				} else if (item->Type == PipelineItem::ItemType::ComputePass && m_computeSupported) {
+					m_shaderSources[i].TCS = tcs;
+					m_shaderSources[i].TES = tes;
+				} 
+				else if (item->Type == PipelineItem::ItemType::ComputePass && m_computeSupported) {
 					pipe::ComputePass* shader = (pipe::ComputePass*)item->Data;
+					int shaderMessagesBefore = m_msgs->GetGroupErrorAndWarningMsgCount(name);
 
 					SPIRVQueue.push_back(item);
 
@@ -1207,7 +1330,7 @@ namespace ed {
 						m_includeCheck(content, std::vector<std::string>(), lineBias);
 						m_applyMacros(content, shader);
 					} else { // HLSL / VK
-						content = ShaderCompiler::ConvertToGLSL(shader->SPV, lang, ShaderStage::Compute, false, m_msgs);
+						content = ShaderCompiler::ConvertToGLSL(shader->SPV, lang, ShaderStage::Compute, false, false, m_msgs);
 						entry = "main";
 
 						if (lang == ShaderLanguage::Plugin)
@@ -1216,7 +1339,7 @@ namespace ed {
 
 					// compute shader supported == version 4.3 == not needed: shader->Variables.UpdateTextureList(content);
 					GLuint cs = gl::CompileShader(GL_COMPUTE_SHADER, content.c_str());
-					compiled &= gl::CheckShaderCompilationStatus(cs);
+					compiled &= gl::CheckShaderCompilationStatus(cs, shaderMessage);
 
 					if (m_shaders[i] != 0)
 						glDeleteProgram(m_shaders[i]);
@@ -1225,8 +1348,12 @@ namespace ed {
 						Logger::Get().Log("Compute shader was not compiled", true);
 						if (content.empty())
 							m_msgs->Add(MessageStack::Type::Error, name, "Shader source empty - try recompiling");
-						else
+						else {
+							if (shaderMessage[0] != 0 && shaderMessagesBefore == m_msgs->GetGroupErrorAndWarningMsgCount(name))
+								m_msgs->Add(MessageStack::Type::Error, name, shaderMessage);
 							m_msgs->Add(MessageStack::Type::Error, name, "Failed to compile the compute shader");
+						}
+
 						m_shaders[i] = 0;
 					} else {
 						m_msgs->Add(MessageStack::Type::Message, name, "Compiled the compute shader.");
@@ -1240,7 +1367,8 @@ namespace ed {
 
 					if (m_shaders[i] != 0)
 						shader->Variables.UpdateUniformInfo(m_shaders[i]);
-				} else if (item->Type == PipelineItem::ItemType::AudioPass) {
+				} 
+				else if (item->Type == PipelineItem::ItemType::AudioPass) {
 					pipe::AudioPass* shader = (pipe::AudioPass*)item->Data;
 
 					m_msgs->ClearGroup(name);
@@ -1251,9 +1379,10 @@ namespace ed {
 					if (ShaderCompiler::GetShaderLanguageFromExtension(shader->Path) == ShaderLanguage::GLSL)
 						m_applyMacros(content, shader);
 
-					shader->Stream.compileFromShaderSource(m_project, m_msgs, content, shader->Macros, ShaderCompiler::GetShaderLanguageFromExtension(shader->Path) == ShaderLanguage::HLSL);
-					shader->Variables.UpdateUniformInfo(shader->Stream.getShader());
-				} else if (item->Type == PipelineItem::ItemType::PluginItem) {
+					shader->Stream.CompileFromShaderSource(m_project, m_msgs, content, shader->Macros, ShaderCompiler::GetShaderLanguageFromExtension(shader->Path) == ShaderLanguage::HLSL);
+					shader->Variables.UpdateUniformInfo(shader->Stream.GetShader());
+				} 
+				else if (item->Type == PipelineItem::ItemType::PluginItem) {
 					pipe::PluginItemData* idata = (pipe::PluginItemData*)item->Data;
 					idata->Owner->HandleRecompile(name);
 				}
@@ -1268,7 +1397,7 @@ namespace ed {
 			PipelineItem* item = m_items[i];
 			if (item->Type == PipelineItem::ItemType::ShaderPass) {
 				pipe::ShaderPass* shader = (pipe::ShaderPass*)item->Data;
-				if (strcmp(shader->VSPath, fname) == 0 || strcmp(shader->PSPath, fname) == 0 || strcmp(shader->GSPath, fname) == 0) {
+				if (strcmp(shader->VSPath, fname) == 0 || strcmp(shader->TESPath, fname) == 0 || strcmp(shader->TCSPath, fname) == 0 || strcmp(shader->PSPath, fname) == 0 || strcmp(shader->GSPath, fname) == 0) {
 					Recompile(item->Name);
 				}
 			} else if (item->Type == PipelineItem::ItemType::ComputePass && m_computeSupported) {
@@ -1282,24 +1411,27 @@ namespace ed {
 			}
 		}
 	}
-	void RenderEngine::RecompileFromSource(const char* name, const std::string& vssrc, const std::string& pssrc, const std::string& gssrc)
+	void RenderEngine::RecompileFromSource(const char* name, const std::string& vssrc, const std::string& pssrc, const std::string& gssrc, const std::string& tcssrc, const std::string& tessrc)
 	{
 		m_msgs->BuildOccured = true;
 		m_msgs->CurrentItem = name;
 
 		m_plugins->HandleApplicationEvent(plugin::ApplicationEvent::PipelineItemCompiled, (void*)name, nullptr);
 
-		int d3dCounter = 0;
+		GLchar shaderMessage[1024] = { 0 };
 		for (int i = 0; i < m_items.size(); i++) {
 			PipelineItem* item = m_items[i];
 			if (strcmp(item->Name, name) == 0) {
 				if (item->Type == PipelineItem::ItemType::ShaderPass) {
 					pipe::ShaderPass* shader = (pipe::ShaderPass*)item->Data;
+					int shaderMessagesBefore = m_msgs->GetGroupErrorAndWarningMsgCount(name);
+
 					m_msgs->ClearGroup(name);
 
 					SPIRVQueue.push_back(item);
 
 					bool vsCompiled = true, psCompiled = true, gsCompiled = true;
+					bool tsCompiled = ((shader->TSUsed && m_tessellationSupported) || !shader->TSUsed);
 					int lineBias = 0;
 
 					// pixel shader
@@ -1315,7 +1447,7 @@ namespace ed {
 							m_includeCheck(psContent, std::vector<std::string>(), lineBias);
 							m_applyMacros(psContent, shader);
 						} else { // HLSL / VK
-							psContent = ShaderCompiler::ConvertToGLSL(shader->PSSPV, psLang, ShaderStage::Pixel, shader->GSUsed, m_msgs);
+							psContent = ShaderCompiler::ConvertToGLSL(shader->PSSPV, psLang, ShaderStage::Pixel, shader->TSUsed, shader->GSUsed, m_msgs);
 							
 							if (psLang == ShaderLanguage::Plugin)
 								psContent = m_pluginProcessGLSL(shader->PSPath, psContent.c_str());
@@ -1325,7 +1457,7 @@ namespace ed {
 
 						shader->Variables.UpdateTextureList(psContent);
 						GLuint ps = gl::CompileShader(GL_FRAGMENT_SHADER, psContent.c_str());
-						psCompiled &= gl::CheckShaderCompilationStatus(ps);
+						psCompiled &= gl::CheckShaderCompilationStatus(ps, shaderMessage);
 
 						glDeleteShader(m_shaderSources[i].PS);
 						m_shaderSources[i].PS = ps;
@@ -1346,7 +1478,7 @@ namespace ed {
 							m_includeCheck(vsContent, std::vector<std::string>(), lineBias);
 							m_applyMacros(vsContent, shader);
 						} else { // HLSL / VK
-							vsContent = ShaderCompiler::ConvertToGLSL(shader->VSSPV, vsLang, ShaderStage::Vertex, shader->GSUsed, m_msgs);
+							vsContent = ShaderCompiler::ConvertToGLSL(shader->VSSPV, vsLang, ShaderStage::Vertex, shader->TSUsed, shader->GSUsed, m_msgs);
 
 							if (vsLang == ShaderLanguage::Plugin)
 								vsContent = m_pluginProcessGLSL(shader->VSPath, vsContent.c_str());
@@ -1354,7 +1486,7 @@ namespace ed {
 
 
 						GLuint vs = gl::CompileShader(GL_VERTEX_SHADER, vsContent.c_str());
-						vsCompiled &= gl::CheckShaderCompilationStatus(vs);
+						vsCompiled &= gl::CheckShaderCompilationStatus(vs, shaderMessage);
 
 						glDeleteShader(m_shaderSources[i].VS);
 						m_shaderSources[i].VS = vs;
@@ -1375,7 +1507,7 @@ namespace ed {
 							m_includeCheck(gsContent, std::vector<std::string>(), lineBias);
 							m_applyMacros(gsContent, shader);
 						} else { // HLSL / VK
-							gsContent = ShaderCompiler::ConvertToGLSL(shader->GSSPV, gsLang, ShaderStage::Geometry, shader->GSUsed, m_msgs);
+							gsContent = ShaderCompiler::ConvertToGLSL(shader->GSSPV, gsLang, ShaderStage::Geometry, shader->TSUsed, shader->GSUsed, m_msgs);
 
 							if (gsLang == ShaderLanguage::Plugin)
 								gsContent = m_pluginProcessGLSL(shader->GSPath, gsContent.c_str());
@@ -1386,16 +1518,80 @@ namespace ed {
 						glDeleteShader(m_shaderSources[i].GS);
 						if (shader->GSUsed && strlen(shader->GSPath) > 0 && strlen(shader->GSEntry) > 0) {
 							gs = gl::CompileShader(GL_GEOMETRY_SHADER, gsContent.c_str());
-							gsCompiled &= gl::CheckShaderCompilationStatus(gs);
+							gsCompiled &= gl::CheckShaderCompilationStatus(gs, shaderMessage);
 
 							m_shaderSources[i].GS = gs;
+						}
+					}
+
+					// tessellation control shader
+					if (tcssrc.size() > 0 && m_tessellationSupported) {
+						lineBias = 0;
+
+						ShaderLanguage tcsLang = ShaderCompiler::GetShaderLanguageFromExtension(shader->TCSPath);
+						if (tcsLang == ShaderLanguage::Plugin)
+							tsCompiled &= m_pluginCompileToSpirv(shader->TCSSPV, shader->TCSPath, shader->TCSEntry, plugin::ShaderStage::TessellationControl, shader->Macros.data(), shader->Macros.size(), tcssrc);
+						else
+							tsCompiled &= ShaderCompiler::CompileSourceToSPIRV(shader->TCSSPV, tcsLang, shader->TCSPath, tcssrc, ShaderStage::TessellationControl, shader->TCSEntry, shader->Macros, m_msgs, m_project);
+
+						std::string tcsContent = tcssrc;
+						if (tcsLang == ShaderLanguage::GLSL) { // GLSL
+							m_includeCheck(tcsContent, std::vector<std::string>(), lineBias);
+							m_applyMacros(tcsContent, shader);
+						} else { // HLSL / VK
+							tcsContent = ShaderCompiler::ConvertToGLSL(shader->TCSSPV, tcsLang, ShaderStage::TessellationControl, shader->TSUsed, shader->GSUsed, m_msgs);
+
+							if (tcsLang == ShaderLanguage::Plugin)
+								tcsContent = m_pluginProcessGLSL(shader->TCSPath, tcsContent.c_str());
+						}
+
+						GLuint tcs = 0;
+						glDeleteShader(m_shaderSources[i].TCS);
+						if (shader->TSUsed && strlen(shader->TCSPath) > 0 && strlen(shader->TCSEntry) > 0) {
+							tcs = gl::CompileShader(GL_TESS_CONTROL_SHADER, tcsContent.c_str());
+							tsCompiled &= gl::CheckShaderCompilationStatus(tcs, shaderMessage);
+
+							m_shaderSources[i].TCS = tcs;
+						}
+					}
+
+					// tessellation control shader
+					if (tessrc.size() > 0 && m_tessellationSupported) {
+						lineBias = 0;
+
+						ShaderLanguage tesLang = ShaderCompiler::GetShaderLanguageFromExtension(shader->TESPath);
+						if (tesLang == ShaderLanguage::Plugin)
+							tsCompiled &= m_pluginCompileToSpirv(shader->TESSPV, shader->TESPath, shader->TESEntry, plugin::ShaderStage::TessellationEvaluation, shader->Macros.data(), shader->Macros.size(), tessrc);
+						else
+							tsCompiled &= ShaderCompiler::CompileSourceToSPIRV(shader->TESSPV, tesLang, shader->TESPath, tessrc, ShaderStage::TessellationEvaluation, shader->TESEntry, shader->Macros, m_msgs, m_project);
+
+						std::string tesContent = tessrc;
+						if (tesLang == ShaderLanguage::GLSL) { // GLSL
+							m_includeCheck(tesContent, std::vector<std::string>(), lineBias);
+							m_applyMacros(tesContent, shader);
+						} else { // HLSL / VK
+							tesContent = ShaderCompiler::ConvertToGLSL(shader->TESSPV, tesLang, ShaderStage::TessellationEvaluation, shader->TSUsed, shader->GSUsed, m_msgs);
+
+							if (tesLang == ShaderLanguage::Plugin)
+								tesContent = m_pluginProcessGLSL(shader->TESPath, tesContent.c_str());
+						}
+
+						GLuint tes = 0;
+						glDeleteShader(m_shaderSources[i].TES);
+						if (shader->TSUsed && strlen(shader->TESPath) > 0 && strlen(shader->TESEntry) > 0) {
+							tes = gl::CompileShader(GL_TESS_EVALUATION_SHADER, tesContent.c_str());
+							tsCompiled &= gl::CheckShaderCompilationStatus(tes, shaderMessage);
+
+							m_shaderSources[i].TES = tes;
 						}
 					}
 
 					if (m_shaders[i] != 0)
 						glDeleteProgram(m_shaders[i]);
 
-					if (!vsCompiled || !psCompiled || !gsCompiled) {
+					if (!vsCompiled || !psCompiled || !gsCompiled || !tsCompiled) {
+						if (shaderMessage[0] != 0 && shaderMessagesBefore == m_msgs->GetGroupErrorAndWarningMsgCount(name))
+							m_msgs->Add(MessageStack::Type::Error, name, shaderMessage);
 						m_msgs->Add(MessageStack::Type::Error, name, "Failed to compile the shader(s)");
 						m_shaders[i] = 0;
 					} else {
@@ -1405,13 +1601,18 @@ namespace ed {
 						glAttachShader(m_shaders[i], m_shaderSources[i].VS);
 						glAttachShader(m_shaders[i], m_shaderSources[i].PS);
 						if (shader->GSUsed) glAttachShader(m_shaders[i], m_shaderSources[i].GS);
+						if (shader->TSUsed) glAttachShader(m_shaders[i], m_shaderSources[i].TCS);
+						if (shader->TSUsed) glAttachShader(m_shaders[i], m_shaderSources[i].TES);
 						glLinkProgram(m_shaders[i]);
 					}
 
 					if (m_shaders[i] != 0)
 						shader->Variables.UpdateUniformInfo(m_shaders[i]);
-				} else if (item->Type == PipelineItem::ItemType::ComputePass && m_computeSupported) {
+				} 
+				else if (item->Type == PipelineItem::ItemType::ComputePass && m_computeSupported) {
 					pipe::ComputePass* shader = (pipe::ComputePass*)item->Data;
+					int shaderMessagesBefore = m_msgs->GetGroupErrorAndWarningMsgCount(name);
+
 					m_msgs->ClearGroup(name);
 
 					SPIRVQueue.push_back(item);
@@ -1434,7 +1635,7 @@ namespace ed {
 							m_includeCheck(content, std::vector<std::string>(), lineBias);
 							m_applyMacros(content, shader);
 						} else { // HLSL / VK
-							content = ShaderCompiler::ConvertToGLSL(shader->SPV, lang, ShaderStage::Compute, false, m_msgs);
+							content = ShaderCompiler::ConvertToGLSL(shader->SPV, lang, ShaderStage::Compute, false, false, m_msgs);
 
 							if (lang == ShaderLanguage::Plugin)
 								content = m_pluginProcessGLSL(shader->Path, content.c_str());
@@ -1448,6 +1649,9 @@ namespace ed {
 					if (m_shaders[i] != 0)
 						glDeleteProgram(m_shaders[i]);
 
+					if (m_shaders[i] != 0 && shaderMessagesBefore == m_msgs->GetGroupErrorAndWarningMsgCount(name))
+						shader->Variables.UpdateUniformInfo(m_shaders[i]);
+
 					if (!compiled) {
 						m_msgs->Add(MessageStack::Type::Error, name, "Failed to compile the compute shader");
 						m_shaders[i] = 0;
@@ -1459,11 +1663,9 @@ namespace ed {
 						glLinkProgram(m_shaders[i]);
 					}
 
-					if (m_shaders[i] != 0)
-						shader->Variables.UpdateUniformInfo(m_shaders[i]);
-
 					glDeleteShader(cs);
-				} else if (item->Type == PipelineItem::ItemType::AudioPass) {
+				} 
+				else if (item->Type == PipelineItem::ItemType::AudioPass) {
 					pipe::AudioPass* shader = (pipe::AudioPass*)item->Data;
 					m_msgs->ClearGroup(name);
 
@@ -1472,8 +1674,8 @@ namespace ed {
 
 					// audio shader
 					if (vssrc.size() > 0)
-						shader->Stream.compileFromShaderSource(m_project, m_msgs, vssrc, shader->Macros, true);
-					shader->Variables.UpdateUniformInfo(shader->Stream.getShader());
+						shader->Stream.CompileFromShaderSource(m_project, m_msgs, vssrc, shader->Macros, true);
+					shader->Variables.UpdateUniformInfo(shader->Stream.GetShader());
 				}
 			}
 		}
@@ -1650,6 +1852,8 @@ namespace ed {
 
 		// did we actually pick sth that is closer?
 		if (myDist < m_pickDist) {
+			SystemVariableManager::Instance().SetPickPosition(m_pickOrigin + m_pickDir * myDist);
+
 			m_pickDist = myDist;
 			AddPickedItem(item, multiPick);
 		}
@@ -1724,20 +1928,24 @@ namespace ed {
 			glDeleteShader(m_shaderSources[i].VS);
 			glDeleteShader(m_shaderSources[i].PS);
 			glDeleteShader(m_shaderSources[i].GS);
+			glDeleteShader(m_shaderSources[i].TCS);
+			glDeleteShader(m_shaderSources[i].TES);
 			glDeleteProgram(m_shaders[i]);
+			glDeleteQueries(1, &m_perfTimers[i].Object);
 		}
 
 		m_fbos.clear();
 		m_fboCount.clear();
 		m_items.clear();
 		m_shaders.clear();
+		m_perfTimers.clear();
 		m_shaderSources.clear();
 		m_uboMax.clear();
 		m_fbosNeedUpdate = true;
 
 		// clear textures
 		glBindTexture(GL_TEXTURE_2D, m_rtColor);
-		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, m_lastSize.x, m_lastSize.y, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+		glTexImage2D(GL_TEXTURE_2D, 0, Settings::Instance().Project.UseAlphaChannel ? GL_RGBA32F : GL_RGB32F, m_lastSize.x, m_lastSize.y, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
 		glBindTexture(GL_TEXTURE_2D, m_rtDepth);
 		glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH24_STENCIL8, m_lastSize.x, m_lastSize.y, 0, GL_DEPTH_STENCIL, GL_UNSIGNED_INT_24_8, NULL);
 		glBindTexture(GL_TEXTURE_2D, 0);
@@ -1758,6 +1966,7 @@ namespace ed {
 		}
 
 		// check if some item was added
+		GLchar shaderMessage[1024] = { 0 };
 		for (int i = 0; i < items.size(); i++) {
 			bool found = false;
 			for (int j = 0; j < m_items.size(); j++)
@@ -1771,6 +1980,7 @@ namespace ed {
 
 				if (items[i]->Type == PipelineItem::ItemType::ShaderPass) {
 					pipe::ShaderPass* data = reinterpret_cast<ed::pipe::ShaderPass*>(items[i]->Data);
+					int shaderMessagesBefore = m_msgs->GetGroupErrorAndWarningMsgCount(items[i]->Name);
 
 					m_items.insert(m_items.begin() + i, items[i]);
 					m_shaders.insert(m_shaders.begin() + i, 0);
@@ -1778,6 +1988,11 @@ namespace ed {
 					m_shaderSources.insert(m_shaderSources.begin() + i, ShaderPack());
 					
 					SPIRVQueue.push_back(items[i]);
+
+					// cache performance timer
+					m_perfTimers.insert(m_perfTimers.begin() + i, PerformanceTimer(items[i]));
+					glGenQueries(1, &m_perfTimers[i].Object);
+					m_perfTimers[i].IsCreated = true;
 
 					if (strlen(data->VSPath) == 0 || strlen(data->PSPath) == 0) {
 						Logger::Get().Log("No shader paths are set", true);
@@ -1787,6 +2002,8 @@ namespace ed {
 					glDeleteShader(m_shaderSources[i].VS);
 					glDeleteShader(m_shaderSources[i].PS);
 					glDeleteShader(m_shaderSources[i].GS);
+					glDeleteShader(m_shaderSources[i].TCS);
+					glDeleteShader(m_shaderSources[i].TES);
 
 					/*
 						ITEM CACHING
@@ -1794,7 +2011,7 @@ namespace ed {
 
 					m_fbos[data].resize(MAX_RENDER_TEXTURES);
 
-					GLuint ps = 0, vs = 0, gs = 0;
+					GLuint ps = 0, vs = 0, gs = 0, tcs = 0, tes = 0;
 
 					m_msgs->CurrentItem = items[i]->Name;
 
@@ -1819,7 +2036,7 @@ namespace ed {
 						m_includeCheck(vsContent, std::vector<std::string>(), lineBias);
 						m_applyMacros(vsContent, data);
 					} else if (vsCompiled) {
-						vsContent = ShaderCompiler::ConvertToGLSL(data->VSSPV, vsLang, ShaderStage::Vertex, data->GSUsed, m_msgs);
+						vsContent = ShaderCompiler::ConvertToGLSL(data->VSSPV, vsLang, ShaderStage::Vertex, data->TSUsed, data->GSUsed, m_msgs);
 						vsEntry = "main";
 
 						if (vsLang == ShaderLanguage::Plugin)
@@ -1827,7 +2044,7 @@ namespace ed {
 					}
 
 					vs = gl::CompileShader(GL_VERTEX_SHADER, vsContent.c_str());
-					vsCompiled &= gl::CheckShaderCompilationStatus(vs);
+					vsCompiled &= gl::CheckShaderCompilationStatus(vs, shaderMessage);
 					
 					// pixel shader
 					lineBias = 0;
@@ -1843,7 +2060,7 @@ namespace ed {
 						m_includeCheck(psContent, std::vector<std::string>(), lineBias);
 						m_applyMacros(psContent, data);
 					} else if (psCompiled) { // HLSL / VK
-						psContent = ShaderCompiler::ConvertToGLSL(data->PSSPV, psLang, ShaderStage::Pixel, data->GSUsed, m_msgs);
+						psContent = ShaderCompiler::ConvertToGLSL(data->PSSPV, psLang, ShaderStage::Pixel, data->TSUsed, data->GSUsed, m_msgs);
 						psEntry = "main";
 
 						if (psLang == ShaderLanguage::Plugin)
@@ -1852,14 +2069,14 @@ namespace ed {
 
 					data->Variables.UpdateTextureList(psContent);
 					ps = gl::CompileShader(GL_FRAGMENT_SHADER, psContent.c_str());
-					psCompiled &= gl::CheckShaderCompilationStatus(ps);
+					psCompiled &= gl::CheckShaderCompilationStatus(ps, shaderMessage);
 
 					// geometry shader
 					lineBias = 0;
 					bool gsCompiled = true;
 					if (data->GSUsed && strlen(data->GSEntry) > 0 && strlen(data->GSPath) > 0) {
 						std::string gsContent = "", gsEntry = data->GSEntry;
-						ShaderLanguage gsLang = ShaderCompiler::GetShaderLanguageFromExtension(data->PSPath);
+						ShaderLanguage gsLang = ShaderCompiler::GetShaderLanguageFromExtension(data->GSPath);
 						
 						if (gsLang == ShaderLanguage::Plugin)
 							gsCompiled = m_pluginCompileToSpirv(data->GSSPV, data->GSPath, gsEntry, plugin::ShaderStage::Geometry, data->Macros.data(), data->Macros.size());
@@ -1871,7 +2088,7 @@ namespace ed {
 							m_includeCheck(gsContent, std::vector<std::string>(), lineBias);
 							m_applyMacros(gsContent, data);
 						} else if (gsCompiled) { // HLSL
-							gsContent = ShaderCompiler::ConvertToGLSL(data->GSSPV, gsLang, ShaderStage::Geometry, data->GSUsed, m_msgs);
+							gsContent = ShaderCompiler::ConvertToGLSL(data->GSSPV, gsLang, ShaderStage::Geometry, data->TSUsed, data->GSUsed, m_msgs);
 							gsEntry = "main";
 
 							if (gsLang == ShaderLanguage::Plugin)
@@ -1879,8 +2096,66 @@ namespace ed {
 						}
 
 						gs = gl::CompileShader(GL_GEOMETRY_SHADER, gsContent.c_str());
-						gsCompiled &= gl::CheckShaderCompilationStatus(gs);
+						gsCompiled &= gl::CheckShaderCompilationStatus(gs, shaderMessage);
 					}
+
+					// tessellation shader
+					lineBias = 0;
+					bool tsCompiled = ((data->TSUsed && m_tessellationSupported) || !data->TSUsed);
+					if (data->TSUsed && m_tessellationSupported) {
+						// tessellation control shader
+						if (strlen(data->TCSEntry) > 0 && strlen(data->TCSPath) > 0) {
+							std::string tcsContent = "", tcsEntry = data->TCSEntry;
+							ShaderLanguage tcsLang = ShaderCompiler::GetShaderLanguageFromExtension(data->TCSPath);
+
+							if (tcsLang == ShaderLanguage::Plugin)
+								tsCompiled &= m_pluginCompileToSpirv(data->TCSSPV, data->TCSPath, tcsEntry, plugin::ShaderStage::TessellationControl, data->Macros.data(), data->Macros.size());
+							else
+								tsCompiled &= ShaderCompiler::CompileToSPIRV(data->TCSSPV, tcsLang, data->TCSPath, ShaderStage::TessellationControl, tcsEntry, data->Macros, m_msgs, m_project);
+
+							if (tcsLang == ShaderLanguage::GLSL) { // GLSL
+								tcsContent = m_project->LoadProjectFile(data->TCSPath);
+								m_includeCheck(tcsContent, std::vector<std::string>(), lineBias);
+								m_applyMacros(tcsContent, data);
+							} else if (gsCompiled) { // HLSL
+								tcsContent = ShaderCompiler::ConvertToGLSL(data->TCSSPV, tcsLang, ShaderStage::TessellationControl, data->TSUsed, data->GSUsed, m_msgs);
+								tcsEntry = "main";
+
+								if (tcsLang == ShaderLanguage::Plugin)
+									tcsContent = m_pluginProcessGLSL(data->TCSPath, tcsContent.c_str());
+							}
+
+							tcs = gl::CompileShader(GL_TESS_CONTROL_SHADER, tcsContent.c_str());
+							tsCompiled &= gl::CheckShaderCompilationStatus(tcs, shaderMessage);
+						}
+
+						// tessellation evauluation shader
+						if (strlen(data->TESEntry) > 0 && strlen(data->TESPath) > 0) {
+							std::string tesContent = "", tesEntry = data->TESEntry;
+							ShaderLanguage tesLang = ShaderCompiler::GetShaderLanguageFromExtension(data->TESPath);
+
+							if (tesLang == ShaderLanguage::Plugin)
+								tsCompiled &= m_pluginCompileToSpirv(data->TESSPV, data->TESPath, tesEntry, plugin::ShaderStage::TessellationEvaluation, data->Macros.data(), data->Macros.size());
+							else
+								tsCompiled &= ShaderCompiler::CompileToSPIRV(data->TESSPV, tesLang, data->TESPath, ShaderStage::TessellationEvaluation, tesEntry, data->Macros, m_msgs, m_project);
+
+							if (tesLang == ShaderLanguage::GLSL) { // GLSL
+								tesContent = m_project->LoadProjectFile(data->TESPath);
+								m_includeCheck(tesContent, std::vector<std::string>(), lineBias);
+								m_applyMacros(tesContent, data);
+							} else if (gsCompiled) { // HLSL
+								tesContent = ShaderCompiler::ConvertToGLSL(data->TESSPV, tesLang, ShaderStage::TessellationEvaluation, data->TSUsed, data->GSUsed, m_msgs);
+								tesEntry = "main";
+
+								if (tesLang == ShaderLanguage::Plugin)
+									tesContent = m_pluginProcessGLSL(data->TESPath, tesContent.c_str());
+							}
+
+							tes = gl::CompileShader(GL_TESS_EVALUATION_SHADER, tesContent.c_str());
+							tsCompiled &= gl::CheckShaderCompilationStatus(tes, shaderMessage);
+						}
+					}
+
 
 					if (m_shaders[i] != 0)
 						glDeleteProgram(m_shaders[i]);
@@ -1888,7 +2163,9 @@ namespace ed {
 					if (m_debugShaders[i] != 0)
 						glDeleteProgram(m_debugShaders[i]);
 
-					if (!vsCompiled || !psCompiled || !gsCompiled) {
+					if (!vsCompiled || !psCompiled || !gsCompiled || !tsCompiled) {
+						if (shaderMessage[0] != 0 && shaderMessagesBefore == m_msgs->GetGroupErrorAndWarningMsgCount(items[i]->Name))
+							m_msgs->Add(MessageStack::Type::Error, items[i]->Name, shaderMessage);
 						m_msgs->Add(MessageStack::Type::Error, items[i]->Name, "Failed to compile the shader");
 						m_shaders[i] = 0;
 					} else {
@@ -1898,12 +2175,16 @@ namespace ed {
 						glAttachShader(m_shaders[i], vs);
 						glAttachShader(m_shaders[i], ps);
 						if (data->GSUsed) glAttachShader(m_shaders[i], gs);
+						if (data->TSUsed) glAttachShader(m_shaders[i], tcs);
+						if (data->TSUsed) glAttachShader(m_shaders[i], tes);
 						glLinkProgram(m_shaders[i]);
 
 						m_debugShaders[i] = glCreateProgram();
 						glAttachShader(m_debugShaders[i], m_generalDebugShader);
 						glAttachShader(m_debugShaders[i], vs);
 						if (data->GSUsed) glAttachShader(m_debugShaders[i], gs);
+						if (data->TSUsed) glAttachShader(m_debugShaders[i], tcs);
+						if (data->TSUsed) glAttachShader(m_debugShaders[i], tes);
 						glLinkProgram(m_debugShaders[i]);
 					}
 
@@ -1913,9 +2194,12 @@ namespace ed {
 					m_shaderSources[i].VS = vs;
 					m_shaderSources[i].PS = ps;
 					m_shaderSources[i].GS = gs;
+					m_shaderSources[i].TCS = tcs;
+					m_shaderSources[i].TES = tes;
 				}
 				else if (items[i]->Type == PipelineItem::ItemType::ComputePass && m_computeSupported) {
 					pipe::ComputePass* data = reinterpret_cast<ed::pipe::ComputePass*>(items[i]->Data);
+					int shaderMessagesBefore = m_msgs->GetGroupErrorAndWarningMsgCount(items[i]->Name);
 
 					m_items.insert(m_items.begin() + i, items[i]);
 					m_shaders.insert(m_shaders.begin() + i, 0);
@@ -1923,6 +2207,11 @@ namespace ed {
 					m_shaderSources.insert(m_shaderSources.begin() + i, ShaderPack());
 
 					SPIRVQueue.push_back(items[i]);
+
+					// cache performance timer
+					m_perfTimers.insert(m_perfTimers.begin() + i, PerformanceTimer(items[i]));
+					glGenQueries(1, &m_perfTimers[i].Object);
+					m_perfTimers[i].IsCreated = true;
 
 					if (strlen(data->Path) == 0) {
 						Logger::Get().Log("No shader paths are set", true);
@@ -1954,7 +2243,7 @@ namespace ed {
 						m_includeCheck(content, std::vector<std::string>(), lineBias);
 						m_applyMacros(content, data);
 					} else if (compiled) { // HLSL / VK
-						content = ShaderCompiler::ConvertToGLSL(data->SPV, lang, ShaderStage::Compute, false, m_msgs);
+						content = ShaderCompiler::ConvertToGLSL(data->SPV, lang, ShaderStage::Compute, false, false, m_msgs);
 						entry = "main";
 
 						if (lang == ShaderLanguage::Plugin)
@@ -1962,12 +2251,14 @@ namespace ed {
 					}
 
 					cs = gl::CompileShader(GL_COMPUTE_SHADER, content.c_str());
-					compiled &= gl::CheckShaderCompilationStatus(cs);
+					compiled &= gl::CheckShaderCompilationStatus(cs, shaderMessage);
 
 					if (m_shaders[i] != 0)
 						glDeleteProgram(m_shaders[i]);
 
 					if (!compiled) {
+						if (shaderMessage[0] != 0 && shaderMessagesBefore == m_msgs->GetGroupErrorAndWarningMsgCount(items[i]->Name))
+							m_msgs->Add(MessageStack::Type::Error, items[i]->Name, shaderMessage);
 						m_msgs->Add(MessageStack::Type::Error, items[i]->Name, "Failed to compile the compute shader");
 						m_shaders[i] = 0;
 					} else {
@@ -1984,6 +2275,8 @@ namespace ed {
 					m_shaderSources[i].VS = 0;
 					m_shaderSources[i].PS = 0;
 					m_shaderSources[i].GS = 0;
+					m_shaderSources[i].TCS = 0;
+					m_shaderSources[i].TES = 0;
 				} 
 				else if (items[i]->Type == PipelineItem::ItemType::AudioPass) {
 					pipe::AudioPass* data = reinterpret_cast<ed::pipe::AudioPass*>(items[i]->Data);
@@ -1992,6 +2285,11 @@ namespace ed {
 					m_shaders.insert(m_shaders.begin() + i, 0);
 					m_debugShaders.insert(m_debugShaders.begin() + i, 0);
 					m_shaderSources.insert(m_shaderSources.begin() + i, ShaderPack());
+
+					// cache performance timer
+					m_perfTimers.insert(m_perfTimers.begin() + i, PerformanceTimer(items[i]));
+					glGenQueries(1, &m_perfTimers[i].Object);
+					m_perfTimers[i].IsCreated = true;
 
 					/*
 						ITEM CACHING
@@ -2003,9 +2301,9 @@ namespace ed {
 					// vertex shader
 					if (ShaderCompiler::GetShaderLanguageFromExtension(data->Path) == ShaderLanguage::GLSL)
 						m_applyMacros(content, data);
-					data->Stream.compileFromShaderSource(m_project, m_msgs, content, data->Macros, ShaderCompiler::GetShaderLanguageFromExtension(data->Path) == ShaderLanguage::HLSL);
+					data->Stream.CompileFromShaderSource(m_project, m_msgs, content, data->Macros, ShaderCompiler::GetShaderLanguageFromExtension(data->Path) == ShaderLanguage::HLSL);
 
-					data->Variables.UpdateUniformInfo(data->Stream.getShader());
+					data->Variables.UpdateUniformInfo(data->Stream.GetShader());
 				} 
 				else if (items[i]->Type == PipelineItem::ItemType::PluginItem) {
 					pipe::PluginItemData* data = reinterpret_cast<pipe::PluginItemData*>(items[i]->Data);
@@ -2014,6 +2312,11 @@ namespace ed {
 					m_shaders.insert(m_shaders.begin() + i, 0);
 					m_debugShaders.insert(m_debugShaders.begin() + i, 0);
 					m_shaderSources.insert(m_shaderSources.begin() + i, ShaderPack());
+
+					// cache performance timer
+					m_perfTimers.insert(m_perfTimers.begin() + i, PerformanceTimer(items[i]));
+					glGenQueries(1, &m_perfTimers[i].Object);
+					m_perfTimers[i].IsCreated = true;
 				}
 			}
 		}
@@ -2030,6 +2333,7 @@ namespace ed {
 			if (!found) {
 				glDeleteProgram(m_shaders[i]);
 				glDeleteProgram(m_debugShaders[i]);
+				glDeleteQueries(1, &m_perfTimers[i].Object);
 
 				Logger::Get().Log("Removing an item from cache");
 
@@ -2040,6 +2344,7 @@ namespace ed {
 				m_shaders.erase(m_shaders.begin() + i);
 				m_debugShaders.erase(m_debugShaders.begin() + i);
 				m_shaderSources.erase(m_shaderSources.begin() + i);
+				m_perfTimers.erase(m_perfTimers.begin() + i);
 			}
 		}
 
@@ -2060,6 +2365,7 @@ namespace ed {
 						GLuint sCopy = m_shaders[i];
 						GLuint sdbgCopy = m_debugShaders[i];
 						ShaderPack ssrcCopy = m_shaderSources[i];
+						PerformanceTimer perfTimerCopy = m_perfTimers[i];
 
 						m_shaders.erase(m_shaders.begin() + i);
 						m_shaders.insert(m_shaders.begin() + dest, sCopy);
@@ -2069,6 +2375,9 @@ namespace ed {
 
 						m_shaderSources.erase(m_shaderSources.begin() + i);
 						m_shaderSources.insert(m_shaderSources.begin() + dest, ssrcCopy);
+
+						m_perfTimers.erase(m_perfTimers.begin() + i);
+						m_perfTimers.insert(m_perfTimers.begin() + dest, perfTimerCopy);
 					}
 				}
 			}

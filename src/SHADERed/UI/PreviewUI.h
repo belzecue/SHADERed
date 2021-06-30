@@ -19,7 +19,10 @@ namespace ed {
 				, m_overlayFBO(0)
 				, m_overlayColor(0)
 				, m_overlayDepth(0)
+				, m_boxVAO(0)
+				, m_boxVBO(0)
 				, m_lastSize(-1, -1)
+				, m_zoomLastSize(-1, -1)
 		{
 			m_setupShortcuts();
 			m_setupBoundingBox();
@@ -32,12 +35,41 @@ namespace ed {
 			m_mouseLock = false;
 			m_fullWindowFocus = true;
 			m_pauseTime = false;
+
+			m_isAnalyzingFullFrame = false;
+			m_isSelectingRegion = false;
+			m_regionStart = m_regionEnd = glm::vec2(0.0f);
+
+			m_view = PreviewView::Normal;
+			m_viewDebugger = 0;
+			m_viewHeatmap = 0;
+			m_viewUB = 0;
+			m_viewBreakpoints = 0;
+			m_viewVariableValue = 0;
+			m_frameAnalyzed = false;
+
+			m_varValueItem = nullptr;
+			m_varValueName = "";
+			m_varValueLine = 0;
+			m_varValueComponents = 0;
+			m_varValue = nullptr;
 		}
 		~PreviewUI()
 		{
 			glDeleteBuffers(1, &m_boxVBO);
 			glDeleteVertexArrays(1, &m_boxVAO);
 			glDeleteShader(m_boxShader);
+
+			glDeleteTextures(1, &m_viewDebugger);
+			glDeleteTextures(1, &m_viewHeatmap);
+			glDeleteTextures(1, &m_viewUB);
+			glDeleteTextures(1, &m_viewBreakpoints);
+			glDeleteTextures(1, &m_viewVariableValue);
+
+			if (m_varValue != nullptr) {
+				free(m_varValue);
+				m_varValue = nullptr;
+			}
 		}
 
 		virtual void OnEvent(const SDL_Event& e);
@@ -50,11 +82,28 @@ namespace ed {
 		inline glm::vec2 GetUIRectSize() { return glm::vec2(m_imgSize.x, m_imgSize.y); }
 		inline glm::vec2 GetUIRectPosition() { return glm::vec2(m_imgPosition.x, m_imgPosition.y); }
 
+		void SetVariableValue(PipelineItem* item, const std::string& varName, int line);
+		inline bool IsFrameAnalyzed() { return m_frameAnalyzed; }
+
 		inline void Reset()
 		{
 			m_zoom.Reset();
 			Pick(nullptr);
+			m_view = PreviewView::Normal;
+			m_varValueItem = nullptr;
+			m_varValueName = "";
+			m_varValueLine = 0;
+			m_frameAnalyzed = false;
 		}
+
+		enum class PreviewView {
+			Normal,
+			Debugger,
+			Heatmap,
+			UndefinedBehavior,
+			GlobalBreakpoints,
+			VariableValue
+		};
 
 	private:
 		void m_setupShortcuts();
@@ -64,6 +113,8 @@ namespace ed {
 		void m_setupBoundingBox();
 		void m_buildBoundingBox();
 		void m_renderBoundingBox();
+
+		void m_pause();
 
 		// zoom info
 		Magnifier m_zoom;
@@ -108,5 +159,29 @@ namespace ed {
 		bool m_mouseVisible;
 		bool m_mouseLock;
 		bool m_fullWindowFocus;
+
+		// frame analysis
+		PreviewView m_view;
+		GLuint m_viewDebugger, m_viewHeatmap, m_viewUB, m_viewBreakpoints, m_viewVariableValue;
+		bool m_frameAnalyzed;
+		bool m_isAnalyzingFullFrame;
+		bool m_isSelectingRegion;
+		glm::vec2 m_regionStart, m_regionEnd;
+		void m_renderAnalyzerPopup();
+		void m_runFrameAnalysis();
+
+		// global breakpoints
+		std::vector<const dbg::Breakpoint*> m_analyzerBreakpoint;
+		std::vector<const char*> m_analyzerBreakpointPath;
+		std::vector<bool> m_analyzerBreakpointGlobal;
+		std::vector<glm::vec3> m_analyzerBreakpointColor;
+		void m_buildBreakpointList();
+
+		// variable value
+		PipelineItem* m_varValueItem;
+		std::string m_varValueName;
+		int m_varValueLine;
+		uint8_t m_varValueComponents;
+		float* m_varValue;
 	};
 }

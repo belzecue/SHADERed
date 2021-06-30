@@ -5,8 +5,9 @@
 #include <SHADERed/Objects/ShaderCompiler.h>
 #include <SHADERed/Objects/ThemeContainer.h>
 #include <SHADERed/UI/CodeEditorUI.h>
+#include <SHADERed/UI/PreviewUI.h>
 #include <SHADERed/UI/UIHelper.h>
-#include <ImGuiFileDialog/ImGuiFileDialog.h>
+#include <misc/ImFileDialog.h>
 
 #include <imgui/imgui.h>
 #include <imgui/imgui_internal.h>
@@ -34,6 +35,7 @@ namespace ed {
 	CodeEditorUI::CodeEditorUI(GUIManager* ui, ed::InterfaceManager* objects, const std::string& name, bool visible)
 			: UIView(ui, objects, name, visible)
 			, m_selectedItem(-1)
+			, m_trackUpdatesNeeded(0)
 	{
 		Settings& sets = Settings::Instance();
 
@@ -48,7 +50,6 @@ namespace ed {
 		m_fontSize = sets.Editor.FontSize;
 		m_fontNeedsUpdate = false;
 		m_savePopupOpen = -1;
-		m_focusStage = ShaderStage::Vertex;
 		m_focusWindow = false;
 		m_trackFileChanges = false;
 		m_trackThread = nullptr;
@@ -110,31 +111,41 @@ namespace ed {
 				} else
 					text = ed->GetText();
 
+				bool isSeparateFile = m_items[m_editorSaveRequestID] == nullptr;
+
 				std::string path = "";
 
-				if (m_items[m_editorSaveRequestID]->Type == PipelineItem::ItemType::ShaderPass) {
-					ed::pipe::ShaderPass* shader = reinterpret_cast<ed::pipe::ShaderPass*>(m_items[m_editorSaveRequestID]->Data);
+				// TODO: why not just m_paths[m_editorSaveRequestID] ? was this written before m_paths was added?
+				if (!isSeparateFile) {
+					if (m_items[m_editorSaveRequestID]->Type == PipelineItem::ItemType::ShaderPass) {
+						ed::pipe::ShaderPass* shader = reinterpret_cast<ed::pipe::ShaderPass*>(m_items[m_editorSaveRequestID]->Data);
 
-					if (m_shaderStage[m_editorSaveRequestID] == ShaderStage::Vertex)
-						path = shader->VSPath;
-					else if (m_shaderStage[m_editorSaveRequestID] == ShaderStage::Pixel)
-						path = shader->PSPath;
-					else if (m_shaderStage[m_editorSaveRequestID] == ShaderStage::Geometry)
-						path = shader->GSPath;
-				} else if (m_items[m_editorSaveRequestID]->Type == PipelineItem::ItemType::ComputePass) {
-					ed::pipe::ComputePass* shader = reinterpret_cast<ed::pipe::ComputePass*>(m_items[m_editorSaveRequestID]->Data);
-					path = shader->Path;
-				} else if (m_items[m_editorSaveRequestID]->Type == PipelineItem::ItemType::AudioPass) {
-					ed::pipe::AudioPass* shader = reinterpret_cast<ed::pipe::AudioPass*>(m_items[m_editorSaveRequestID]->Data);
-					path = shader->Path;
-				}
+						if (m_shaderStage[m_editorSaveRequestID] == ShaderStage::Vertex)
+							path = shader->VSPath;
+						else if (m_shaderStage[m_editorSaveRequestID] == ShaderStage::Pixel)
+							path = shader->PSPath;
+						else if (m_shaderStage[m_editorSaveRequestID] == ShaderStage::Geometry)
+							path = shader->GSPath;
+						else if (m_shaderStage[m_editorSaveRequestID] == ShaderStage::TessellationControl)
+							path = shader->TCSPath;
+						else if (m_shaderStage[m_editorSaveRequestID] == ShaderStage::TessellationEvaluation)
+							path = shader->TESPath;
+					} else if (m_items[m_editorSaveRequestID]->Type == PipelineItem::ItemType::ComputePass) {
+						ed::pipe::ComputePass* shader = reinterpret_cast<ed::pipe::ComputePass*>(m_items[m_editorSaveRequestID]->Data);
+						path = shader->Path;
+					} else if (m_items[m_editorSaveRequestID]->Type == PipelineItem::ItemType::AudioPass) {
+						ed::pipe::AudioPass* shader = reinterpret_cast<ed::pipe::AudioPass*>(m_items[m_editorSaveRequestID]->Data);
+						path = shader->Path;
+					}
+				} else
+					path = m_paths[m_editorSaveRequestID];
 
 				if (ed)
 					ed->ResetTextChanged();
 				else
 					pluginEd->Plugin->ShaderEditor_ResetChangeState(pluginEd->LanguageID, pluginEd->ID);
 
-				if (m_items[m_editorSaveRequestID]->Type == PipelineItem::ItemType::PluginItem) {
+				if (!isSeparateFile && m_items[m_editorSaveRequestID]->Type == PipelineItem::ItemType::PluginItem) {
 					pipe::PluginItemData* shader = reinterpret_cast<pipe::PluginItemData*>(m_items[m_editorSaveRequestID]->Data);
 					std::string edsrc = m_editor[m_editorSaveRequestID]->GetText();
 					shader->Owner->CodeEditor_SaveItem(edsrc.c_str(), edsrc.size(), m_paths[m_editorSaveRequestID].c_str()); // TODO: custom stages
@@ -156,19 +167,19 @@ namespace ed {
 	{
 		if (id < m_items.size()) {
 			m_editorSaveRequestID = id;
-			igfd::ImGuiFileDialog::Instance()->OpenModal("SaveSPVBinaryDlg", "Save SPIR-V binary", "SPIR-V binary (*.spv){.spv},.*", ".");
+			ifd::FileDialog::Instance().Save("SaveSPVBinaryDlg", "Save SPIR-V binary", "SPIR-V binary (*.spv){.spv},.*");
 		}
 	}
 	void CodeEditorUI::m_saveAsGLSL(int id)
 	{
 		if (id < m_items.size()) {
 			m_editorSaveRequestID = id;
-			igfd::ImGuiFileDialog::Instance()->OpenModal("SaveGLSLDlg", "Save as GLSL", "GLSL source (*.glsl){.glsl},.*", ".");
+			ifd::FileDialog::Instance().Save("SaveGLSLDlg", "Save as GLSL", "GLSL source (*.glsl){.glsl},.*");
 		}
 	}
 	void CodeEditorUI::m_compile(int id)
 	{
-		if (id >= m_editor.size())
+		if (id >= m_editor.size() || m_items[id] == nullptr)
 			return;
 
 		if (m_trackerRunning) {
@@ -187,6 +198,10 @@ namespace ed {
 				shaderFile = shader->PSPath;
 			else if (m_shaderStage[id] == ShaderStage::Geometry)
 				shaderFile = shader->GSPath;
+			else if (m_shaderStage[id] == ShaderStage::TessellationControl)
+				shaderFile = shader->TCSPath;
+			else if (m_shaderStage[id] == ShaderStage::TessellationEvaluation)
+				shaderFile = shader->TESPath;
 		} else if (m_items[id]->Type == PipelineItem::ItemType::ComputePass) {
 			ed::pipe::ComputePass* shader = reinterpret_cast<ed::pipe::ComputePass*>(m_items[id]->Data);
 			shaderFile = shader->Path;
@@ -210,16 +225,27 @@ namespace ed {
 		m_selectedItem = -1;
 
 		// counters for each shader type for window ids
-		int wid[5] = { 0 }; // vs, ps, gs, cs, pl
+		int wid[10] = { 0 }; // vs, ps, gs, cs, tes, tcs, pl
 
 		// editor windows
 		for (int i = 0; i < m_editor.size(); i++) {
 			if (m_editorOpen[i]) {
-				bool isPluginItem = m_items[i]->Type == PipelineItem::ItemType::PluginItem;
-				pipe::PluginItemData* plData = (pipe::PluginItemData*)m_items[i]->Data;
+				bool isSeparateFile = (m_items[i] == nullptr);
+				bool isPluginItem = isSeparateFile ? false : (m_items[i]->Type == PipelineItem::ItemType::PluginItem);
+				pipe::PluginItemData* plData = isSeparateFile ? nullptr : (pipe::PluginItemData*)m_items[i]->Data;
 
-				std::string shaderType = isPluginItem ? plData->Owner->LanguageDefinition_GetNameAbbreviation((int)m_shaderStage[i]) : m_shaderStage[i] == ShaderStage::Vertex ? "VS" : (m_shaderStage[i] == ShaderStage::Pixel ? "PS" : (m_shaderStage[i] == ShaderStage::Geometry ? "GS" : "CS"));
-				std::string windowName(std::string(m_items[i]->Name) + " (" + shaderType + ")");
+				std::string stageAbbr = "VS";
+				if (m_shaderStage[i] == ShaderStage::Pixel) stageAbbr = "PS";
+				else if (m_shaderStage[i] == ShaderStage::Geometry) stageAbbr = "GS";
+				else if (m_shaderStage[i] == ShaderStage::Compute) stageAbbr = "CS";
+				else if (m_shaderStage[i] == ShaderStage::Audio) stageAbbr = "AS";
+				else if (m_shaderStage[i] == ShaderStage::TessellationControl) stageAbbr = "TCS";
+				else if (m_shaderStage[i] == ShaderStage::TessellationEvaluation) stageAbbr = "TES";
+				else if (isSeparateFile) stageAbbr = "FILE";
+
+
+				std::string shaderType = isPluginItem ? plData->Owner->LanguageDefinition_GetNameAbbreviation((int)m_shaderStage[i]) : stageAbbr;
+				std::string windowName(std::string(isSeparateFile ? std::filesystem::path(m_paths[i]).filename().u8string() : m_items[i]->Name) + " (" + shaderType + ")");
 
 				int pluginLanguageID = m_pluginEditor[i].LanguageID;
 				int pluginEditorID = m_pluginEditor[i].ID;
@@ -239,9 +265,9 @@ namespace ed {
 							ImGui::EndMenu();
 						}
 						if (ImGui::BeginMenu("Code")) {
-							if (ImGui::MenuItem("Compile", KeyboardShortcuts::Instance().GetString("CodeUI.Compile").c_str())) m_compile(i);
-
-							bool showStats = m_pluginEditor[i].Plugin == nullptr || (m_pluginEditor[i].Plugin && m_pluginEditor[i].Plugin->ShaderEditor_HasStats(pluginLanguageID, pluginEditorID));
+							if (ImGui::MenuItem("Compile", KeyboardShortcuts::Instance().GetString("CodeUI.Compile").c_str(), false, m_items[i] != nullptr)) m_compile(i);
+							
+							bool showStats = m_items[i] != nullptr && (m_pluginEditor[i].Plugin == nullptr || (m_pluginEditor[i].Plugin && m_pluginEditor[i].Plugin->ShaderEditor_HasStats(pluginLanguageID, pluginEditorID)));
 							
 							if (showStats) {
 								if (!m_stats[i].Visible && ImGui::MenuItem("Stats", KeyboardShortcuts::Instance().GetString("CodeUI.SwitchView").c_str())) {
@@ -283,39 +309,7 @@ namespace ed {
 						ImGui::PopFont();
 					} else {
 						if (m_editor[i]) {
-							// add error markers if needed
-							auto msgs = m_data->Messages.GetMessages();
-							int groupMsg = 0;
-							TextEditor::ErrorMarkers groupErrs;
-							for (int j = 0; j < msgs.size(); j++) {
-								ed::MessageStack::Message* msg = &msgs[j];
-
-								if (groupErrs.count(msg->Line))
-									continue;
-
-								if (msg->Line > 0 && msg->Group == m_items[i]->Name && msg->Shader == m_shaderStage[i])
-									groupErrs[msg->Line] = msg->Text;
-							}
-							m_editor[i]->SetErrorMarkers(groupErrs);
-
-							bool statusbar = Settings::Instance().Editor.StatusBar;
-
-							// render code
-							ImGui::PushFont(m_font);
-							m_editor[i]->Render(windowName.c_str(), ImVec2(0, -statusbar * STATUSBAR_HEIGHT));
-							if (ImGui::IsItemHovered() && ImGui::GetIO().KeyCtrl && ImGui::GetIO().MouseWheel != 0.0f) {
-								Settings::Instance().Editor.FontSize = Settings::Instance().Editor.FontSize + ImGui::GetIO().MouseWheel;
-								this->SetFont(Settings::Instance().Editor.Font, Settings::Instance().Editor.FontSize);
-							}
-							ImGui::PopFont();
-
-							// status bar
-							if (statusbar) {
-								auto cursor = m_editor[i]->GetCursorPosition();
-
-								ImGui::Separator();
-								ImGui::Text("Line %d\tCol %d\tType: %s\tPath: %s", cursor.mLine, cursor.mColumn, m_editor[i]->GetLanguageDefinition().mName.c_str(), m_paths[i].c_str());
-							}
+							DrawTextEditor(windowName, m_editor[i]);
 						} else {
 							PluginShaderEditor* pluginData = &m_pluginEditor[i];
 							if (pluginData->Plugin) {
@@ -331,7 +325,7 @@ namespace ed {
 				}
 
 				if (m_focusWindow) {
-					if (m_focusItem == m_items[i]->Name && m_focusStage == m_shaderStage[i]) {
+					if (m_focusPath == m_paths[i]) {
 						ImGui::SetWindowFocus();
 						m_focusWindow = false;
 					}
@@ -377,9 +371,9 @@ namespace ed {
 		}
 
 		// save spir-v binary dialog
-		if (igfd::ImGuiFileDialog::Instance()->FileDialog("SaveSPVBinaryDlg")) {
-			if (igfd::ImGuiFileDialog::Instance()->IsOk) {
-				std::string filePathName = igfd::ImGuiFileDialog::Instance()->GetFilepathName();
+		if (ifd::FileDialog::Instance().IsDone("SaveSPVBinaryDlg")) {
+			if (ifd::FileDialog::Instance().HasResult()) {
+				std::string filePathName = ifd::FileDialog::Instance().GetResult().u8string();
 
 				std::vector<unsigned int> spv;
 
@@ -394,6 +388,10 @@ namespace ed {
 						spv = pass->VSSPV;
 					else if (stage == ShaderStage::Geometry)
 						spv = pass->GSSPV;
+					else if (stage == ShaderStage::TessellationControl)
+						spv = pass->TCSSPV;
+					else if (stage == ShaderStage::TessellationEvaluation)
+						spv = pass->TESSPV;
 				} else if (item->Type == PipelineItem::ItemType::ComputePass) {
 					pipe::ComputePass* pass = (pipe::ComputePass*)item->Data;
 					if (stage == ShaderStage::Pixel)
@@ -411,16 +409,17 @@ namespace ed {
 				spvOut.write((char*)spv.data(), spv.size() * sizeof(unsigned int));
 				spvOut.close();
 			}
-			igfd::ImGuiFileDialog::Instance()->CloseDialog("SaveSPVBinaryDlg");
+			ifd::FileDialog::Instance().Close();
 		}
 
 		// save glsl dialog
-		if (igfd::ImGuiFileDialog::Instance()->FileDialog("SaveGLSLDlg")) {
-			if (igfd::ImGuiFileDialog::Instance()->IsOk) {
-				std::string filePathName = igfd::ImGuiFileDialog::Instance()->GetFilepathName();
+		if (ifd::FileDialog::Instance().IsDone("SaveGLSLDlg")) {
+			if (ifd::FileDialog::Instance().HasResult()) {
+				std::string filePathName = ifd::FileDialog::Instance().GetResult().u8string();
 
 				std::vector<unsigned int> spv;
 				bool gsUsed = false;
+				bool tsUsed = false;
 
 				PipelineItem* item = m_items[m_editorSaveRequestID];
 				ShaderStage stage = m_shaderStage[m_editorSaveRequestID];
@@ -440,7 +439,13 @@ namespace ed {
 						spv = pass->VSSPV;
 					else if (stage == ShaderStage::Geometry)
 						spv = pass->GSSPV;
+					else if (stage == ShaderStage::TessellationControl)
+						spv = pass->TCSSPV;
+					else if (stage == ShaderStage::TessellationEvaluation)
+						spv = pass->TESSPV;
+
 					gsUsed = pass->GSUsed;
+					tsUsed = pass->TSUsed;
 				} else if (item->Type == PipelineItem::ItemType::ComputePass) {
 					pipe::ComputePass* pass = (pipe::ComputePass*)item->Data;
 					if (stage == ShaderStage::Pixel)
@@ -454,20 +459,20 @@ namespace ed {
 						spv = std::vector<unsigned int>(spvPtr, spvPtr + spvSize);
 				}
 
-				std::string glslSource = ed::ShaderCompiler::ConvertToGLSL(spv, lang, stage, gsUsed, nullptr);
+				std::string glslSource = ed::ShaderCompiler::ConvertToGLSL(spv, lang, stage, tsUsed, gsUsed, nullptr);
 
 				std::ofstream spvOut(filePathName, std::ios::out | std::ios::binary);
 				spvOut.write(glslSource.c_str(), glslSource.size());
 				spvOut.close();
 			}
-			igfd::ImGuiFileDialog::Instance()->CloseDialog("SaveGLSLDlg");
+			ifd::FileDialog::Instance().Close();
 		}
 
 		// delete closed editors
 		if (m_savePopupOpen == -1) {
 			for (int i = 0; i < m_editorOpen.size(); i++) {
 				if (!m_editorOpen[i]) {
-					if (m_items[i]->Type == PipelineItem::ItemType::PluginItem) {
+					if (m_items[i] && m_items[i]->Type == PipelineItem::ItemType::PluginItem) {
 						pipe::PluginItemData* shader = reinterpret_cast<pipe::PluginItemData*>(m_items[i]->Data);
 						shader->Owner->CodeEditor_CloseItem(m_paths[i].c_str());
 					}
@@ -486,6 +491,50 @@ namespace ed {
 					m_shaderStage.erase(m_shaderStage.begin() + i);
 					i--;
 				}
+			}
+		}
+	}
+
+	void CodeEditorUI::DrawTextEditor(const std::string& windowName, TextEditor* tEdit)
+	{
+		if (tEdit) {
+			int i = 0;
+			for (; i < m_editor.size(); i++)
+				if (m_editor[i] == tEdit)
+					break;
+
+			// add error markers if needed
+			auto msgs = m_data->Messages.GetMessages();
+			int groupMsg = 0;
+			TextEditor::ErrorMarkers groupErrs;
+			for (int j = 0; j < msgs.size(); j++) {
+				ed::MessageStack::Message* msg = &msgs[j];
+
+				if (groupErrs.count(msg->Line))
+					continue;
+
+				if (msg->Line > 0 && msg->Group == m_items[i]->Name && msg->Shader == m_shaderStage[i])
+					groupErrs[msg->Line] = msg->Text;
+			}
+			tEdit->SetErrorMarkers(groupErrs);
+
+			bool statusbar = Settings::Instance().Editor.StatusBar;
+
+			// render code
+			ImGui::PushFont(m_font);
+			m_editor[i]->Render(windowName.c_str(), ImVec2(0, -statusbar * STATUSBAR_HEIGHT));
+			if (ImGui::IsItemHovered() && ImGui::GetIO().KeyCtrl && ImGui::GetIO().MouseWheel != 0.0f) {
+				Settings::Instance().Editor.FontSize = Settings::Instance().Editor.FontSize + ImGui::GetIO().MouseWheel;
+				this->SetFont(Settings::Instance().Editor.Font, Settings::Instance().Editor.FontSize);
+			}
+			ImGui::PopFont();
+
+			// status bar
+			if (statusbar) {
+				auto cursor = m_editor[i]->GetCursorPosition();
+
+				ImGui::Separator();
+				ImGui::Text("Line %d\tCol %d\tType: %s\tPath: %s", cursor.mLine, cursor.mColumn, m_editor[i]->GetLanguageDefinition().mName.c_str(), m_paths[i].c_str());
 			}
 		}
 	}
@@ -576,17 +625,22 @@ namespace ed {
 		if (m_contentChanged && m_lastAutoRecompile.GetElapsedTime() > 0.8f) {
 			for (int i = 0; i < m_changedEditors.size(); i++) {
 				for (int j = 0; j < m_editor.size(); j++) {
-					if (m_editor[j] == m_changedEditors[i]) {
+					if (m_editor[j] == m_changedEditors[i] && m_items[j] != nullptr) {
 						if (m_items[j]->Type == PipelineItem::ItemType::ShaderPass) {
-							std::string vs = "", ps = "", gs = "";
+							std::string vs = "", ps = "", gs = "", tcs = "", tes = "";
 							if (m_shaderStage[j] == ShaderStage::Vertex)
 								vs = m_editor[j]->GetText();
 							else if (m_shaderStage[j] == ShaderStage::Pixel)
 								ps = m_editor[j]->GetText();
 							else if (m_shaderStage[j] == ShaderStage::Geometry)
 								gs = m_editor[j]->GetText();
-							m_data->Renderer.RecompileFromSource(m_items[j]->Name, vs, ps, gs);
-						} else if (m_items[j]->Type == PipelineItem::ItemType::ComputePass)
+							else if (m_shaderStage[j] == ShaderStage::TessellationControl)
+								tcs = m_editor[j]->GetText();
+							else if (m_shaderStage[j] == ShaderStage::TessellationEvaluation)
+								tes = m_editor[j]->GetText();
+							m_data->Renderer.RecompileFromSource(m_items[j]->Name, vs, ps, gs, tcs, tes);
+						}
+						else if (m_items[j]->Type == PipelineItem::ItemType::ComputePass)
 							m_data->Renderer.RecompileFromSource(m_items[j]->Name, m_editor[j]->GetText());
 						else if (m_items[j]->Type == PipelineItem::ItemType::AudioPass)
 							m_data->Renderer.RecompileFromSource(m_items[j]->Name, m_editor[j]->GetText());
@@ -613,14 +667,18 @@ namespace ed {
 						const char* tempText = plugin->ShaderEditor_GetContent(langID, editorID, &contentLength);
 
 						if (m_items[j]->Type == PipelineItem::ItemType::ShaderPass) {
-							std::string vs = "", ps = "", gs = "";
+							std::string vs = "", ps = "", gs = "", tcs = "", tes = "";
 							if (m_shaderStage[j] == ShaderStage::Vertex)
 								vs = std::string(tempText, contentLength);
 							else if (m_shaderStage[j] == ShaderStage::Pixel)
 								ps = std::string(tempText, contentLength);
 							else if (m_shaderStage[j] == ShaderStage::Geometry)
 								gs = std::string(tempText, contentLength);
-							m_data->Renderer.RecompileFromSource(m_items[j]->Name, vs, ps, gs);
+							else if (m_shaderStage[j] == ShaderStage::TessellationControl)
+								tcs = std::string(tempText, contentLength);
+							else if (m_shaderStage[j] == ShaderStage::TessellationEvaluation)
+								tes = std::string(tempText, contentLength);
+							m_data->Renderer.RecompileFromSource(m_items[j]->Name, vs, ps, gs, tcs, tes);
 						} else if (m_items[j]->Type == PipelineItem::ItemType::ComputePass)
 							m_data->Renderer.RecompileFromSource(m_items[j]->Name, std::string(tempText, contentLength));
 						else if (m_items[j]->Type == PipelineItem::ItemType::AudioPass)
@@ -673,6 +731,8 @@ namespace ed {
 			editor->SetActiveAutocomplete(Settings::Instance().Editor.ActiveSmartPredictions);
 			editor->SetColorizerEnable(Settings::Instance().Editor.SyntaxHighlighting);
 			editor->SetScrollbarMarkers(Settings::Instance().Editor.ScrollbarMarkers);
+			editor->SetHiglightBrackets(Settings::Instance().Editor.HighlightBrackets);
+			editor->SetFoldEnabled(Settings::Instance().Editor.CodeFolding);
 			
 			editor->ClearAutocompleteEntries();
 
@@ -836,6 +896,12 @@ namespace ed {
 			} else if (stage == ShaderStage::Geometry) {
 				shaderPath = shader->GSPath;
 				if (!externalEditor) spvData.Parse(shader->PSSPV);
+			} else if (stage == ShaderStage::TessellationControl) {
+				shaderPath = shader->TCSPath;
+				if (!externalEditor) spvData.Parse(shader->TCSSPV);
+			} else if (stage == ShaderStage::TessellationEvaluation) {
+				shaderPath = shader->TESPath;
+				if (!externalEditor) spvData.Parse(shader->TESSPV);
 			}
 		} else if (item->Type == PipelineItem::ItemType::ComputePass) {
 			ed::pipe::ComputePass* shader = reinterpret_cast<ed::pipe::ComputePass*>(item->Data);
@@ -857,8 +923,7 @@ namespace ed {
 		for (int i = 0; i < m_paths.size(); i++) {
 			if (m_paths[i] == shaderPath) {
 				m_focusWindow = true;
-				m_focusStage = stage;
-				m_focusItem = m_items[i]->Name;
+				m_focusPath = shaderPath;
 				return;
 			}
 		}
@@ -914,6 +979,18 @@ namespace ed {
 			editor->SetActiveAutocomplete(Settings::Instance().Editor.ActiveSmartPredictions);
 			editor->SetColorizerEnable(Settings::Instance().Editor.SyntaxHighlighting);
 			editor->SetScrollbarMarkers(Settings::Instance().Editor.ScrollbarMarkers);
+			editor->SetHiglightBrackets(Settings::Instance().Editor.HighlightBrackets);
+			editor->SetFoldEnabled(Settings::Instance().Editor.CodeFolding);
+			editor->RequestOpen = [&](TextEditor* tEdit, const std::string& tEditPath, const std::string& path) {
+				OpenFile(m_findIncludedFile(tEditPath, path));
+			};
+			editor->OnCtrlAltClick = [&](TextEditor* tEdit, const std::string& keyword, TextEditor::Coordinates coords) {
+				for (int t = 0; t < m_editor.size(); t++)
+					if (m_editor[t] == tEdit) {
+						((PreviewUI*)m_ui->Get(ViewID::Preview))->SetVariableValue(m_items[t], keyword, coords.mLine);
+						break;
+					}
+			};
 			m_loadEditorShortcuts(editor);
 
 			if (sLang == ShaderLanguage::HLSL)
@@ -950,6 +1027,119 @@ namespace ed {
 			pluginEditor->Plugin->ShaderEditor_Open(pluginEditor->LanguageID, pluginEditor->ID, shaderContent.c_str(), shaderContent.size());
 		}
 	}
+	void CodeEditorUI::OpenFile(const std::string& path)
+	{
+		std::string shaderContent = "";
+		bool externalEditor = Settings::Instance().General.UseExternalEditor;
+		
+		if (externalEditor) {
+			UIHelper::ShellOpen(path);
+			return;
+		}
+
+		// check if file is already opened
+		for (int i = 0; i < m_paths.size(); i++) {
+			if (m_paths[i] == path) {
+				m_focusWindow = true;
+				m_focusPath = path;
+				return;
+			}
+		}
+
+		int langID = 0;
+		IPlugin1* plugin = nullptr;
+		ShaderLanguage sLang = ShaderCompiler::GetShaderLanguageFromExtension(path);
+		if (sLang == ShaderLanguage::Plugin)
+			plugin = ShaderCompiler::GetPluginLanguageFromExtension(&langID, path, m_data->Plugins.Plugins());
+
+		shaderContent = m_data->Parser.LoadFile(path);
+
+		m_items.push_back(nullptr);
+		m_editorOpen.push_back(true);
+		m_stats.push_back(StatsPage(m_ui, m_data, "", false));
+		m_shaderStage.push_back(ShaderStage::Count);
+		m_paths.push_back(path);
+		m_pluginEditor.push_back(PluginShaderEditor());
+
+		if (plugin != nullptr && plugin->ShaderEditor_Supports(langID))
+			m_editor.push_back(nullptr);
+		else
+			m_editor.push_back(new TextEditor());
+
+		TextEditor* editor = m_editor[m_editor.size() - 1];
+
+		if (editor != nullptr) {
+			editor->OnContentUpdate = [&](TextEditor* chEditor) {
+				if (Settings::Instance().General.AutoRecompile) {
+					if (std::count(m_changedEditors.begin(), m_changedEditors.end(), chEditor) == 0)
+						m_changedEditors.push_back(chEditor);
+					m_contentChanged = true;
+				}
+			};
+
+			editor->SetPalette(ThemeContainer::Instance().GetTextEditorStyle(Settings::Instance().Theme));
+			editor->SetTabSize(Settings::Instance().Editor.TabSize);
+			editor->SetInsertSpaces(Settings::Instance().Editor.InsertSpaces);
+			editor->SetSmartIndent(Settings::Instance().Editor.SmartIndent);
+			editor->SetAutoIndentOnPaste(Settings::Instance().Editor.AutoIndentOnPaste);
+			editor->SetShowWhitespaces(Settings::Instance().Editor.ShowWhitespace);
+			editor->SetHighlightLine(Settings::Instance().Editor.HiglightCurrentLine);
+			editor->SetShowLineNumbers(Settings::Instance().Editor.LineNumbers);
+			editor->SetCompleteBraces(Settings::Instance().Editor.AutoBraceCompletion);
+			editor->SetHorizontalScroll(Settings::Instance().Editor.HorizontalScroll);
+			editor->SetSmartPredictions(Settings::Instance().Editor.SmartPredictions);
+			editor->SetFunctionTooltips(Settings::Instance().Editor.FunctionTooltips);
+			editor->SetFunctionDeclarationTooltip(Settings::Instance().Editor.FunctionDeclarationTooltips);
+			editor->SetPath(path);
+			editor->SetUIScale(Settings::Instance().DPIScale);
+			editor->SetUIFontSize(Settings::Instance().General.FontSize);
+			editor->SetEditorFontSize(Settings::Instance().Editor.FontSize);
+			editor->SetActiveAutocomplete(Settings::Instance().Editor.ActiveSmartPredictions);
+			editor->SetColorizerEnable(Settings::Instance().Editor.SyntaxHighlighting);
+			editor->SetScrollbarMarkers(Settings::Instance().Editor.ScrollbarMarkers);
+			editor->SetHiglightBrackets(Settings::Instance().Editor.HighlightBrackets);
+			editor->SetFoldEnabled(Settings::Instance().Editor.CodeFolding);
+			editor->RequestOpen = [&](TextEditor* tEdit, const std::string& tEditPath, const std::string& path) {
+				OpenFile(m_findIncludedFile(tEditPath, path));
+			};
+			editor->OnCtrlAltClick = [&](TextEditor* tEdit, const std::string& keyword, TextEditor::Coordinates coords) {
+				for (int t = 0; t < m_editor.size(); t++)
+					if (m_editor[t] == tEdit) {
+						((PreviewUI*)m_ui->Get(ViewID::Preview))->SetVariableValue(m_items[t], keyword, coords.mLine);
+						break;
+					}
+			};
+			m_loadEditorShortcuts(editor);
+
+			if (sLang == ShaderLanguage::HLSL)
+				editor->SetLanguageDefinition(TextEditor::LanguageDefinition::HLSL());
+			else if (sLang == ShaderLanguage::Plugin) {
+				if (plugin->LanguageDefinition_Exists(langID))
+					editor->SetLanguageDefinition(m_buildLanguageDefinition(plugin, langID));
+			} else
+				editor->SetLanguageDefinition(TextEditor::LanguageDefinition::GLSL());
+
+			editor->SetText(shaderContent);
+			editor->ResetTextChanged();
+		} else {
+			int idMax = -1;
+			for (int i = 0; i < m_pluginEditor.size(); i++)
+				idMax = std::max<int>(m_pluginEditor[i].ID, idMax);
+
+			PluginShaderEditor* pluginEditor = &m_pluginEditor[m_pluginEditor.size() - 1];
+			pluginEditor->LanguageID = langID;
+			pluginEditor->Plugin = plugin;
+			pluginEditor->ID = idMax + 1;
+
+			pluginEditor->Plugin->OnEditorContentChange = [](void* UI, void* plugin, int langID, int editorID) {
+				GUIManager* gui = (GUIManager*)UI;
+				CodeEditorUI* code = ((CodeEditorUI*)gui->Get(ViewID::Code));
+				code->ChangePluginShaderEditor((IPlugin1*)plugin, langID, editorID);
+			};
+
+			pluginEditor->Plugin->ShaderEditor_Open(pluginEditor->LanguageID, pluginEditor->ID, shaderContent.c_str(), shaderContent.size());
+		}
+	}
 	void CodeEditorUI::OpenPluginCode(PipelineItem* item, const char* filepath, int id)
 	{
 		if (item->Type != PipelineItem::ItemType::PluginItem)
@@ -967,8 +1157,7 @@ namespace ed {
 		for (int i = 0; i < m_paths.size(); i++) {
 			if (m_paths[i] == filepath) {
 				m_focusWindow = true;
-				m_focusStage = (ShaderStage)id; // TODO: this might not work anymore
-				m_focusItem = m_items[i]->Name;
+				m_focusPath = filepath;
 				return;
 			}
 		}
@@ -1027,6 +1216,18 @@ namespace ed {
 			editor->SetActiveAutocomplete(Settings::Instance().Editor.ActiveSmartPredictions);
 			editor->SetColorizerEnable(Settings::Instance().Editor.SyntaxHighlighting);
 			editor->SetScrollbarMarkers(Settings::Instance().Editor.ScrollbarMarkers);
+			editor->SetHiglightBrackets(Settings::Instance().Editor.HighlightBrackets);
+			editor->SetFoldEnabled(Settings::Instance().Editor.CodeFolding);
+			editor->RequestOpen = [&](TextEditor* tEdit, const std::string& tEditPath, const std::string& path) {
+				OpenFile(m_findIncludedFile(tEditPath, path));
+			};
+			editor->OnCtrlAltClick = [&](TextEditor* tEdit, const std::string& keyword, TextEditor::Coordinates coords) {
+				for (int t = 0; t < m_editor.size(); t++)
+					if (m_editor[t] == tEdit) {
+						((PreviewUI*)m_ui->Get(ViewID::Preview))->SetVariableValue(m_items[t], keyword, coords.mLine);
+						break;
+					}
+			};
 			m_loadEditorShortcuts(editor);
 
 			unsigned int spvSize = shader->Owner->PipelineItem_GetSPIRVSize(shader->Type, shader->PluginData, (plugin::ShaderStage)shaderStage);
@@ -1110,7 +1311,8 @@ namespace ed {
 	{
 		std::vector<std::pair<std::string, ShaderStage>> ret;
 		for (int i = 0; i < m_items.size(); i++)
-			ret.push_back(std::make_pair(std::string(m_items[i]->Name), m_shaderStage[i]));
+			if (m_items[i] != nullptr)
+				ret.push_back(std::make_pair(std::string(m_items[i]->Name), m_shaderStage[i]));
 		return ret;
 	}
 	std::vector<std::string> CodeEditorUI::GetOpenedFilesData()
@@ -1147,6 +1349,29 @@ namespace ed {
 					ed->SetShortcut(sID, TextEditor::Shortcut(it->second.Key1, it->second.Key2, it->second.Alt, it->second.Ctrl, it->second.Shift));
 			}
 		}
+	}
+	std::string CodeEditorUI::m_findIncludedFile(const std::string& relativeTo, const std::string& path)
+	{
+		for (const auto& p : Settings::Instance().Project.IncludePaths) {
+			std::filesystem::path ret = std::filesystem::path(p) / path;
+
+			if (!ret.is_absolute()) {
+				std::string projectPath = m_data->Parser.GetProjectPath(ret.u8string());
+				if (std::filesystem::exists(projectPath))
+					return projectPath;
+			}
+
+			if (std::filesystem::exists(ret))
+				return ret.u8string();
+		}
+
+		std::filesystem::path ret = std::filesystem::path(relativeTo);
+		if (ret.has_parent_path())
+			ret = ret.parent_path() / path;
+		if (std::filesystem::exists(ret))
+			return ret.u8string();
+
+		return path;
 	}
 	void CodeEditorUI::m_applyBreakpoints(TextEditor* editor, const std::string& path)
 	{
@@ -1214,6 +1439,7 @@ namespace ed {
 
 		std::vector<PipelineItem*> passes = m_data->Pipeline.GetList();
 		std::vector<bool> gsUsed(passes.size());
+		std::vector<bool> tsUsed(passes.size());
 
 		std::vector<std::string> allFiles;	// list of all files we care for
 		std::vector<std::string> allPasses; // list of shader pass names that correspond to the file name
@@ -1268,7 +1494,7 @@ namespace ed {
 				if (pass->Type == PipelineItem::ItemType::ShaderPass) {
 					pipe::ShaderPass* data = (pipe::ShaderPass*)pass->Data;
 
-					bool foundVS = false, foundPS = false, foundGS = false;
+					bool foundVS = false, foundPS = false, foundGS = false, foundTCS = false, foundTES = false;
 
 					std::string vsPath(m_data->Parser.GetProjectPath(data->VSPath));
 					std::string psPath(m_data->Parser.GetProjectPath(data->PSPath));
@@ -1293,7 +1519,26 @@ namespace ed {
 					} else
 						foundGS = true;
 
-					if (!foundGS || !foundVS || !foundPS) {
+					if (data->TSUsed) {
+						std::string tcsPath(m_data->Parser.GetProjectPath(data->TCSPath));
+						std::string tesPath(m_data->Parser.GetProjectPath(data->TESPath));
+						for (auto& f : allFiles) {
+							if (f == tesPath) {
+								foundTES = true;
+								break;
+							}
+							if (f == tcsPath) {
+								foundTCS = true;
+								break;
+							}
+						}
+					} else {
+						foundTES = true;
+						foundTCS = true;
+					}
+					
+
+					if (!foundGS || !foundVS || !foundPS || !foundTES || !foundTCS) {
 						needsUpdate = true;
 						break;
 					}
@@ -1337,11 +1582,16 @@ namespace ed {
 				}
 			}
 
-			for (int i = 0; i < gsUsed.size() && i < nPasses.size(); i++) {
+			for (int i = 0; i < gsUsed.size() && i < nPasses.size() && i < tsUsed.size(); i++) {
 				if (nPasses[i]->Type == PipelineItem::ItemType::ShaderPass) {
-					bool used = ((pipe::ShaderPass*)nPasses[i]->Data)->GSUsed;
-					if (gsUsed[i] != used) {
-						gsUsed[i] = used;
+					bool newGSUsed = ((pipe::ShaderPass*)nPasses[i]->Data)->GSUsed;
+					bool newTSUsed = ((pipe::ShaderPass*)nPasses[i]->Data)->TSUsed;
+					if (gsUsed[i] != newGSUsed) {
+						gsUsed[i] = newGSUsed;
+						needsUpdate = true;
+					}
+					if (tsUsed[i] != newTSUsed) {
+						tsUsed[i] = newTSUsed;
 						needsUpdate = true;
 					}
 				}
@@ -1372,6 +1622,7 @@ namespace ed {
 				// get all paths to all shaders
 				passes = nPasses;
 				gsUsed.resize(passes.size());
+				tsUsed.resize(passes.size());
 				m_trackedNeedsUpdate.resize(passes.size());
 				for (const auto& pass : passes) {
 					if (pass->Type == PipelineItem::ItemType::ShaderPass) {
@@ -1388,11 +1639,27 @@ namespace ed {
 						paths.push_back(psPath.substr(0, psPath.find_last_of("/\\") + 1));
 						allPasses.push_back(pass->Name);
 
+						// geometry shader
 						if (data->GSUsed) {
 							std::string gsPath(m_data->Parser.GetProjectPath(data->GSPath));
 
 							allFiles.push_back(gsPath);
 							paths.push_back(gsPath.substr(0, gsPath.find_last_of("/\\") + 1));
+							allPasses.push_back(pass->Name);
+						}
+
+						// tessellation shader
+						if (data->TSUsed) {
+							// tessellation control shader
+							std::string tcsPath(m_data->Parser.GetProjectPath(data->TCSPath));
+							allFiles.push_back(tcsPath);
+							paths.push_back(tcsPath.substr(0, tcsPath.find_last_of("/\\") + 1));
+							allPasses.push_back(pass->Name);
+
+							// tessellation evaluation shader
+							std::string tesPath(m_data->Parser.GetProjectPath(data->TESPath));
+							allFiles.push_back(tesPath);
+							paths.push_back(tesPath.substr(0, tesPath.find_last_of("/\\") + 1));
 							allPasses.push_back(pass->Name);
 						}
 					} else if (pass->Type == PipelineItem::ItemType::ComputePass) {

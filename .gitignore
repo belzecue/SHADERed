@@ -20,7 +20,7 @@ SPIRV-ToolsConfig.cmake
 
 # Generated files
 libs/**/*.tcl
-include/
+/include
 
 # Compiled binaries
 ./Debug*
@@ -44,6 +44,7 @@ bin/data/preload.dat
 bin/data/workspace.dat
 bin/data/snippets.xml
 bin/data/bookmarks.dat
+bin/data/filedialog.dat
 
 # Temprorary folder for downloading online shaders
 bin/temp
@@ -57,3 +58,6 @@ bin/log.txt
 
 # Ignore out-of-source build directory.
 build/
+
+# MacOS
+.DS_Store

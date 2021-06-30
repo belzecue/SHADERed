@@ -11,7 +11,7 @@
 #include <SHADERed/UI/CodeEditorUI.h>
 #include <SHADERed/UI/UIHelper.h>
 
-#include <ImGuiFileDialog/ImGuiFileDialog.h>
+#include <misc/ImFileDialog.h>
 
 #include <filesystem>
 #include <fstream>
@@ -146,7 +146,7 @@ namespace ed {
 				m_dialogPath = data->VSPath;
 				m_dialogShaderAuto = &m_isShaderFileAuto[0];
 				m_dialogShaderType = "Vertex";
-				igfd::ImGuiFileDialog::Instance()->OpenModal("CreateItemShaderDlg", "Select a shader", "GLSL & HLSL {.glsl,.hlsl,.vert,.vs,.frag,.fs,.geom,.gs,.comp,.cs,.slang,.shader},.*", ".");
+				ifd::FileDialog::Instance().Open("CreateItemShaderDlg", "Select a shader", "GLSL & HLSL {.glsl,.hlsl,.vert,.vs,.frag,.fs,.geom,.gs,.comp,.cs,.slang,.shader},.*");
 			}
 			ImGui::NextColumn();
 
@@ -170,7 +170,7 @@ namespace ed {
 				m_dialogPath = data->PSPath;
 				m_dialogShaderAuto = &m_isShaderFileAuto[1];
 				m_dialogShaderType = "Pixel";
-				igfd::ImGuiFileDialog::Instance()->OpenModal("CreateItemShaderDlg", "Select a shader", "GLSL & HLSL {.glsl,.hlsl,.vert,.vs,.frag,.fs,.geom,.gs,.comp,.cs,.slang,.shader},.*", ".");
+				ifd::FileDialog::Instance().Open("CreateItemShaderDlg", "Select a shader", "GLSL & HLSL {.glsl,.hlsl,.vert,.vs,.frag,.fs,.geom,.gs,.comp,.cs,.slang,.shader},.*");
 			}
 			ImGui::NextColumn();
 
@@ -210,7 +210,7 @@ namespace ed {
 				m_dialogPath = data->GSPath;
 				m_dialogShaderAuto = &m_isShaderFileAuto[2];
 				m_dialogShaderType = "Geometry";
-				igfd::ImGuiFileDialog::Instance()->OpenModal("CreateItemShaderDlg", "Select a shader", "GLSL & HLSL {.glsl,.hlsl,.vert,.vs,.frag,.fs,.geom,.gs,.comp,.cs,.slang,.shader},.*", ".");
+				ifd::FileDialog::Instance().Open("CreateItemShaderDlg", "Select a shader", "GLSL & HLSL {.glsl,.hlsl,.vert,.vs,.frag,.fs,.geom,.gs,.comp,.cs,.slang,.shader},.*");
 			}
 			ImGui::NextColumn();
 
@@ -222,6 +222,88 @@ namespace ed {
 			ImGui::NextColumn();
 
 			if (!data->GSUsed) ImGui::PopItemFlag();
+
+
+			
+			// ts used
+			ImGui::Text("Use tessellation shader:");
+			ImGui::NextColumn();
+			ImGui::PushItemWidth(-1);
+			if (ImGui::Checkbox("##cui_sptsuse", &data->TSUsed)) {
+				if (m_isShaderFileAuto[3]) {
+					if (data->TSUsed)
+						strcpy(data->TCSPath, ("shaders/" + std::string(m_item.Name) + "TCS." + m_fileAutoExtensions[m_fileAutoExtensionSel]).c_str());
+					else
+						strcpy(data->TCSPath, "");
+				}
+				if (m_isShaderFileAuto[4]) {
+					if (data->TSUsed)
+						strcpy(data->TESPath, ("shaders/" + std::string(m_item.Name) + "TES." + m_fileAutoExtensions[m_fileAutoExtensionSel]).c_str());
+					else
+						strcpy(data->TESPath, "");
+				}
+			}
+			ImGui::NextColumn();
+
+			if (!data->TSUsed) ImGui::PushItemFlag(ImGuiItemFlags_Disabled, true);
+
+			ImGui::Text("Patch vertices:");
+			ImGui::NextColumn();
+			ImGui::PushItemWidth(-1);
+			if (ImGui::DragInt("##cui_sptspatchverts", &data->TSPatchVertices, 1.0f, 1, m_data->Renderer.GetMaxPatchVertices()))
+				data->TSPatchVertices = std::max<int>(1, std::min<int>(m_data->Renderer.GetMaxPatchVertices(), data->TSPatchVertices));
+			ImGui::NextColumn();
+			ImGui::Separator();
+
+			// tcs path
+			ImGui::Text("Tessellation control shader path:");
+			ImGui::NextColumn();
+			ImGui::PushItemWidth(PATH_SPACE_LEFT);
+			ImGui::PushItemFlag(ImGuiItemFlags_Disabled, true);
+			ImGui::InputText("##cui_sptcspath", data->TCSPath, SHADERED_MAX_PATH);
+			ImGui::PopItemFlag();
+			ImGui::PopItemWidth();
+			ImGui::SameLine();
+			if (ImGui::Button("...##cui_sptcspath", ImVec2(-1, 0))) {
+				m_dialogPath = data->TCSPath;
+				m_dialogShaderAuto = &m_isShaderFileAuto[3];
+				m_dialogShaderType = "Tessellation Control";
+				ifd::FileDialog::Instance().Open("CreateItemShaderDlg", "Select a shader", "GLSL & HLSL {.glsl,.hlsl,.vert,.vs,.frag,.fs,.geom,.gs,.comp,.cs,.tess,.tsc,.tes.slang,.shader},.*");
+			}
+			ImGui::NextColumn();
+
+			// tcs entry
+			ImGui::Text("Tessellation control shader entry:");
+			ImGui::NextColumn();
+			ImGui::PushItemWidth(-1);
+			ImGui::InputText("##cui_sptcsentry", data->TCSEntry, 32);
+			ImGui::NextColumn();
+
+			// tes path
+			ImGui::Text("Tessellation evaluation shader path:");
+			ImGui::NextColumn();
+			ImGui::PushItemWidth(PATH_SPACE_LEFT);
+			ImGui::PushItemFlag(ImGuiItemFlags_Disabled, true);
+			ImGui::InputText("##cui_sptespath", data->TESPath, SHADERED_MAX_PATH);
+			ImGui::PopItemFlag();
+			ImGui::PopItemWidth();
+			ImGui::SameLine();
+			if (ImGui::Button("...##cui_sptespath", ImVec2(-1, 0))) {
+				m_dialogPath = data->TESPath;
+				m_dialogShaderAuto = &m_isShaderFileAuto[4];
+				m_dialogShaderType = "Tessellation Evaluation";
+				ifd::FileDialog::Instance().Open("CreateItemShaderDlg", "Select a shader", "GLSL & HLSL {.glsl,.hlsl,.vert,.vs,.frag,.fs,.geom,.gs,.comp,.cs,.tess,.tsc,.tes.slang,.shader},.*");
+			}
+			ImGui::NextColumn();
+
+			// tes entry
+			ImGui::Text("Tessellation evaluation shader entry:");
+			ImGui::NextColumn();
+			ImGui::PushItemWidth(-1);
+			ImGui::InputText("##cui_sptesentry", data->TESEntry, 32);
+			ImGui::NextColumn();
+
+			if (!data->TSUsed) ImGui::PopItemFlag();
 		}
 		else if (m_item.Type == PipelineItem::ItemType::ComputePass) {
 			pipe::ComputePass* data = (pipe::ComputePass*)m_item.Data;
@@ -239,7 +321,7 @@ namespace ed {
 				m_dialogPath = data->Path;
 				m_dialogShaderAuto = &m_isShaderFileAuto[0];
 				m_dialogShaderType = "Compute";
-				igfd::ImGuiFileDialog::Instance()->OpenModal("CreateItemShaderDlg", "Select a shader", "GLSL & HLSL {.glsl,.hlsl,.vert,.vs,.frag,.fs,.geom,.gs,.comp,.cs,.slang,.shader},.*", ".");
+				ifd::FileDialog::Instance().Open("CreateItemShaderDlg", "Select a shader", "GLSL & HLSL {.glsl,.hlsl,.vert,.vs,.frag,.fs,.geom,.gs,.comp,.cs,.slang,.shader},.*");
 			}
 			ImGui::NextColumn();
 
@@ -278,7 +360,7 @@ namespace ed {
 				m_dialogPath = data->Path;
 				m_dialogShaderAuto = &m_isShaderFileAuto[0];
 				m_dialogShaderType = "Audio";
-				igfd::ImGuiFileDialog::Instance()->OpenModal("CreateItemShaderDlg", "Select a shader", "GLSL & HLSL {.glsl,.hlsl,.vert,.vs,.frag,.fs,.geom,.gs,.comp,.cs,.slang,.shader},.*", ".");
+				ifd::FileDialog::Instance().Open("CreateItemShaderDlg", "Select a shader", "GLSL & HLSL {.glsl,.hlsl,.vert,.vs,.frag,.fs,.geom,.gs,.comp,.cs,.slang,.shader},.*");
 			}
 			ImGui::NextColumn();
 		}
@@ -571,7 +653,7 @@ namespace ed {
 			ImGui::SameLine();
 			if (ImGui::Button("...##cui_meshfile", ImVec2(-1, 0))) {
 				m_dialogPath = data->Filename;
-				igfd::ImGuiFileDialog::Instance()->OpenModal("CreateMeshDlg", "3D model", ".*", ".");
+				ifd::FileDialog::Instance().Open("CreateMeshDlg", "3D model", ".*");
 			}
 			ImGui::NextColumn();
 
@@ -607,9 +689,9 @@ namespace ed {
 
 		
 		// file dialogs
-		if (igfd::ImGuiFileDialog::Instance()->FileDialog("CreateItemShaderDlg")) {
-			if (igfd::ImGuiFileDialog::Instance()->IsOk) {
-				std::string file = igfd::ImGuiFileDialog::Instance()->GetFilepathName();
+		if (ifd::FileDialog::Instance().IsDone("CreateItemShaderDlg")) {
+			if (ifd::FileDialog::Instance().HasResult()) {
+				std::string file = ifd::FileDialog::Instance().GetResult().u8string();
 				file = m_data->Parser.GetRelativePath(file);
 
 				if (m_dialogPath != nullptr)
@@ -623,11 +705,11 @@ namespace ed {
 				else
 					m_data->Messages.Add(ed::MessageStack::Type::Error, m_item.Name, m_dialogShaderType + " shader file doesnt exist");
 			}
-			igfd::ImGuiFileDialog::Instance()->CloseDialog("CreateItemShaderDlg");
+			ifd::FileDialog::Instance().Close();
 		}
-		if (igfd::ImGuiFileDialog::Instance()->FileDialog("CreateMeshDlg")) {
-			if (igfd::ImGuiFileDialog::Instance()->IsOk) {
-				std::string file = igfd::ImGuiFileDialog::Instance()->GetFilepathName();
+		if (ifd::FileDialog::Instance().IsDone("CreateMeshDlg")) {
+			if (ifd::FileDialog::Instance().HasResult()) {
+				std::string file = ifd::FileDialog::Instance().GetResult().u8string();
 				file = m_data->Parser.GetRelativePath(file);
 
 				strcpy(m_dialogPath, file.c_str());
@@ -636,7 +718,7 @@ namespace ed {
 				if (mdl != nullptr)
 					m_groups = mdl->GetMeshNames();
 			}
-			igfd::ImGuiFileDialog::Instance()->CloseDialog("CreateMeshDlg");
+			ifd::FileDialog::Instance().Close();
 		}
 	}
 	void CreateItemUI::SetOwner(const char* shaderPass)
@@ -732,12 +814,25 @@ namespace ed {
 				strcpy(data->GSEntry, origData->GSEntry);
 				strcpy(data->GSPath, origData->GSPath);
 			}
+			if (origData->TSUsed) {
+				// control shader
+				m_createFile(origData->TCSPath);
+				strcpy(data->TCSEntry, origData->TCSEntry);
+				strcpy(data->TCSPath, origData->TCSPath);
+
+				// evaluation shader
+				m_createFile(origData->TESPath);
+				strcpy(data->TESEntry, origData->TESEntry);
+				strcpy(data->TESPath, origData->TESPath);
+			}
 
 			strcpy(data->PSEntry, origData->PSEntry);
 			strcpy(data->PSPath, origData->PSPath);
 			strcpy(data->VSEntry, origData->VSEntry);
 			strcpy(data->VSPath, origData->VSPath);
 			data->GSUsed = origData->GSUsed;
+			data->TSUsed = origData->TSUsed;
+			data->TSPatchVertices = origData->TSPatchVertices;
 			data->RenderTextures[0] = origData->RenderTextures[0];
 			data->RTCount = 1;
 			data->InputLayout = gl::CreateDefaultInputLayout();
@@ -753,6 +848,13 @@ namespace ed {
 
 				if (data->GSUsed && data->GSPath[0] != 0)
 					code->Open(actualItem, ed::ShaderStage::Geometry);
+
+				if (data->TSUsed) {
+					if (data->TCSPath[0] != 0)
+						code->Open(actualItem, ed::ShaderStage::TessellationControl);
+					if (data->TESPath[0] != 0)
+						code->Open(actualItem, ed::ShaderStage::TessellationEvaluation);
+				}
 			}
 
 			return !m_errorOccured;
@@ -874,7 +976,8 @@ namespace ed {
 		m_isShaderFileAuto[0] = true;
 		m_isShaderFileAuto[1] = true;
 		m_isShaderFileAuto[2] = true;
-
+		m_isShaderFileAuto[3] = true;
+		m_isShaderFileAuto[4] = true;
 	}
 	void CreateItemUI::UpdateLanguageList()
 	{
@@ -929,6 +1032,10 @@ namespace ed {
 				strcpy(data->PSPath, ("shaders/" + std::string(m_item.Name) + "PS." + m_fileAutoExtensions[m_fileAutoExtensionSel]).c_str());
 			if (m_isShaderFileAuto[2] && data->GSUsed)
 				strcpy(data->GSPath, ("shaders/" + std::string(m_item.Name) + "GS." + m_fileAutoExtensions[m_fileAutoExtensionSel]).c_str());
+			if (m_isShaderFileAuto[3] && data->TSUsed)
+				strcpy(data->TCSPath, ("shaders/" + std::string(m_item.Name) + "TCS." + m_fileAutoExtensions[m_fileAutoExtensionSel]).c_str());
+			if (m_isShaderFileAuto[4] && data->TSUsed)
+				strcpy(data->TESPath, ("shaders/" + std::string(m_item.Name) + "TES." + m_fileAutoExtensions[m_fileAutoExtensionSel]).c_str());
 		} else if (m_item.Type == PipelineItem::ItemType::ComputePass) {
 			pipe::ComputePass* data = (pipe::ComputePass*)m_item.Data;
 

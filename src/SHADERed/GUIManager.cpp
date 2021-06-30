@@ -19,6 +19,7 @@
 #include <SHADERed/UI/Debug/BreakpointListUI.h>
 #include <SHADERed/UI/Debug/FunctionStackUI.h>
 #include <SHADERed/UI/Debug/GeometryOutputUI.h>
+#include <SHADERed/UI/Debug/TessellationControlOutputUI.h>
 #include <SHADERed/UI/Debug/ImmediateUI.h>
 #include <SHADERed/UI/Debug/ValuesUI.h>
 #include <SHADERed/UI/Debug/WatchUI.h>
@@ -33,22 +34,28 @@
 #include <SHADERed/UI/PixelInspectUI.h>
 #include <SHADERed/UI/PreviewUI.h>
 #include <SHADERed/UI/PropertyUI.h>
+#include <SHADERed/UI/ProfilerUI.h>
+#include <SHADERed/UI/FrameAnalysisUI.h>
 #include <SHADERed/UI/UIHelper.h>
 #include <imgui/examples/imgui_impl_opengl3.h>
 #include <imgui/examples/imgui_impl_sdl.h>
 #include <imgui/imgui.h>
-#include <ImGuiFileDialog/ImGuiFileDialog.h>
+#include <misc/ImFileDialog.h>
 
 #include <filesystem>
 #include <fstream>
 
-#include <stb/stb_image.h>
+#include <misc/stb_image.h>
 #define STB_IMAGE_WRITE_IMPLEMENTATION
-#include <stb/stb_image_write.h>
+#include <misc/stb_image_write.h>
+
+extern "C" {
+#include <misc/dds.h>
+}
 
 #define STBIR_DEFAULT_FILTER_DOWNSAMPLE STBIR_FILTER_CATMULLROM
 #define STB_IMAGE_RESIZE_IMPLEMENTATION
-#include <stb/stb_image_resize.h>
+#include <misc/stb_image_resize.h>
 
 #if defined(__APPLE__)
 // no includes on mac os
@@ -115,6 +122,8 @@ namespace ed {
 		m_recompiledAll = false;
 		m_isIncompatPluginsOpened = false;
 		m_minimalMode = false;
+		m_focusMode = false;
+		m_focusModeTemp = false;
 		m_cubemapPathPtr = nullptr;
 		m_cmdArguments = nullptr;
 
@@ -163,6 +172,7 @@ namespace ed {
 		m_views.push_back(new PipelineUI(this, objects, "Pipeline"));
 		m_views.push_back(new PropertyUI(this, objects, "Properties"));
 		m_views.push_back(new PixelInspectUI(this, objects, "Pixel Inspect"));
+		m_views.push_back(new ProfilerUI(this, objects, "Profiler"));
 
 		m_debugViews.push_back(new DebugWatchUI(this, objects, "Watches"));
 		m_debugViews.push_back(new DebugValuesUI(this, objects, "Variables"));
@@ -180,6 +190,8 @@ namespace ed {
 		m_createUI = new CreateItemUI(this, objects);
 		m_objectPrev = new ObjectPreviewUI(this, objects, "Object Preview");
 		m_geometryOutput = new DebugGeometryOutputUI(this, objects, "Geometry Shader Output");
+		m_tessControlOutput = new DebugTessControlOutputUI(this, objects, "Tessellation control shader output");
+		m_frameAnalysis = new FrameAnalysisUI(this, objects, "Frame Analysis");
 
 		// turn on the tracker on startup
 		((CodeEditorUI*)Get(ViewID::Code))->SetTrackFileChanges(Settings::Instance().General.RecompileOnFileChange);
@@ -204,7 +216,7 @@ namespace ed {
 
 		((OptionsUI*)m_options)->ApplyTheme();
 
-		FunctionVariableManager::Instance().Initialize(&objects->Pipeline);
+		FunctionVariableManager::Instance().Initialize(&objects->Pipeline, &objects->Debugger, &objects->Renderer);
 		m_data->Renderer.Pause(Settings::Instance().Preview.PausedOnStartup);
 
 		m_kbInfo.SetText(std::string(KEYBOARD_KEYCODES_TEXT));
@@ -217,20 +229,45 @@ namespace ed {
 		// load snippets
 		((CodeEditorUI*)Get(ViewID::Code))->LoadSnippets();
 
+		// setup file dialog
+		ifd::FileDialog::Instance().CreateTexture = [](uint8_t* data, int w, int h, char fmt) -> void* {
+			GLuint tex;
+
+			glGenTextures(1, &tex);
+			glBindTexture(GL_TEXTURE_2D, tex);
+			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+			glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, (fmt == 0) ? GL_BGRA : GL_RGBA, GL_UNSIGNED_BYTE, data);
+			glGenerateMipmap(GL_TEXTURE_2D);
+			glBindTexture(GL_TEXTURE_2D, 0);
+
+			return (void*)tex;
+		};
+		ifd::FileDialog::Instance().DeleteTexture = [](void* tex) {
+			GLuint texID = (GLuint)((uintptr_t)tex);
+			glDeleteTextures(1, &texID);
+		};
+
+
 		// load file dialog bookmarks
-		std::string bookmarksFileLoc = "data/bookmarks.dat";
-		if (!ed::Settings::Instance().LinuxHomeDirectory.empty())
-			bookmarksFileLoc = ed::Settings::Instance().LinuxHomeDirectory + "data/bookmarks.dat";
+		std::string bookmarksFileLoc = Settings::Instance().ConvertPath("data/filedialog.dat");
 		std::ifstream bookmarksFile(bookmarksFileLoc);
-		std::string bookmarksString((std::istreambuf_iterator<char>(bookmarksFile)), std::istreambuf_iterator<char>());
-		igfd::ImGuiFileDialog::Instance()->DeserializeBookmarks(bookmarksString);
+		int fdlgFileVersion = 0;
+		float fdlgZoom = 1.0f;
+		std::string bookmark;
+		bookmarksFile >> fdlgFileVersion;
+		bookmarksFile >> fdlgZoom;
+		while (std::getline(bookmarksFile, bookmark))
+			ifd::FileDialog::Instance().AddFavorite(bookmark);
+		ifd::FileDialog::Instance().SetZoom(fdlgZoom);
 
 		// setup splash screen
 		m_splashScreenLoad();
 
 		// load recents
 		std::string currentInfoPath = Settings::Instance().ConvertPath("info.dat");
-
 		int recentsSize = 0;
 		std::ifstream infoReader(currentInfoPath);
 		infoReader.ignore(128, '\n');
@@ -264,6 +301,7 @@ namespace ed {
 		for (auto& dview : m_debugViews)
 			delete dview;
 		delete m_geometryOutput;
+		delete m_tessControlOutput;
 
 		((BrowseOnlineUI*)m_browseOnline)->FreeMemory();
 		delete m_browseOnline;
@@ -280,7 +318,7 @@ namespace ed {
 
 	void GUIManager::OnEvent(const SDL_Event& e)
 	{
-		m_imguiHandleEvent(e);
+		ImGui_ImplSDL2_ProcessEvent(&e);
 
 		if (m_splashScreen) {
 
@@ -312,6 +350,7 @@ namespace ed {
 				const std::vector<std::string> imgExt = { "png", "jpeg", "jpg", "bmp", "gif", "psd", "pic", "pnm", "hdr", "tga" };
 				const std::vector<std::string> sndExt = { "ogg", "wav", "flac", "aiff", "raw" }; // TODO: more file ext
 				const std::vector<std::string> projExt = { "sprj" };
+				const std::vector<std::string> shaderExt = { "hlsl", "glsl", "vert", "frag", "geom", "tess", "shader" };
 
 				if (std::count(projExt.begin(), projExt.end(), ext) > 0) {
 					bool cont = true;
@@ -327,6 +366,21 @@ namespace ed {
 					m_data->Objects.CreateTexture(file);
 				else if (std::count(sndExt.begin(), sndExt.end(), ext) > 0)
 					m_data->Objects.CreateAudio(file);
+				else if (std::count(shaderExt.begin(), shaderExt.end(), ext) > 0)
+					((CodeEditorUI*)Get(ed::ViewID::Code))->OpenFile(m_data->Parser.GetProjectPath(file));
+				else if (ext == "dds") {
+					std::string actualFileLoc = m_data->Parser.GetProjectPath(file);
+
+					// this makes the load time 2x slower, but it's not like everyones gonna be dropping dds files non stop
+					dds_image_t ddsImage = dds_load_from_file(actualFileLoc.c_str());
+					bool is3D = ddsImage->header.caps2 & DDSCAPS2_VOLUME;
+					dds_image_free(ddsImage);
+					
+					if (is3D)
+						m_data->Objects.CreateTexture3D(actualFileLoc);
+					else
+						m_data->Objects.CreateTexture(actualFileLoc);
+				}
 				else
 					m_data->Plugins.HandleDropFile(file.c_str());
 			}
@@ -352,6 +406,8 @@ namespace ed {
 				dview->OnEvent(e);
 			if (m_data->Debugger.GetStage() == ShaderStage::Geometry)
 				m_geometryOutput->OnEvent(e);
+			if (m_data->Debugger.GetStage() == ShaderStage::TessellationControl)
+				m_tessControlOutput->OnEvent(e);
 		}
 
 		m_data->Plugins.OnEvent(e);
@@ -381,8 +437,9 @@ namespace ed {
 
 		Settings& settings = Settings::Instance();
 		m_performanceMode = m_perfModeFake;
+		m_focusMode = m_focusModeTemp;
 
-		// update audio textures
+		// reset FunctionVariableManager
 		FunctionVariableManager::Instance().ClearVariableList();
 
 		// update editor & workspace font
@@ -451,7 +508,7 @@ namespace ed {
 
 		// toolbar
 		static bool initializedToolbar = false;
-		bool actuallyToolbar = settings.General.Toolbar && !m_performanceMode && !m_minimalMode;
+		bool actuallyToolbar = settings.General.Toolbar && !m_performanceMode && !m_minimalMode && !m_focusMode;
 		if (!initializedToolbar) { // some hacks ew
 			m_renderToolbar();
 			initializedToolbar = true;
@@ -472,7 +529,7 @@ namespace ed {
 		ImGui::PopStyleVar(3);
 
 		// DockSpace
-		if (ImGui::GetIO().ConfigFlags & ImGuiConfigFlags_DockingEnable && !m_performanceMode && !m_minimalMode) {
+		if (ImGui::GetIO().ConfigFlags & ImGuiConfigFlags_DockingEnable && !m_performanceMode && !m_minimalMode && !m_focusMode) {
 			ImGuiID dockspace_id = ImGui::GetID("DockSpace");
 			ImGui::DockSpace(dockspace_id, ImVec2(0.0f, 0.0f), ImGuiDockNodeFlags_None);
 		}
@@ -553,8 +610,34 @@ namespace ed {
 							if (settings.General.AutoUniforms && (plugin == nullptr || (plugin != nullptr && plugin->CustomLanguage_SupportsAutoUniforms(langID))))
 								m_autoUniforms(pass->Variables, spvParser, allUniforms);
 						}
+						if (pass->TCSSPV.size() > 0) {
+							int langID = -1;
+							IPlugin1* plugin = ShaderCompiler::GetPluginLanguageFromExtension(&langID, pass->TCSPath, m_data->Plugins.Plugins());
 
-						if (settings.General.AutoUniforms && deleteUnusedVariables && settings.General.AutoUniformsDelete && pass->VSSPV.size() > 0 && pass->PSSPV.size() > 0 && ((pass->GSUsed && pass->GSSPV.size()>0) || !pass->GSUsed))
+							deleteUnusedVariables &= (plugin == nullptr || (plugin != nullptr && plugin->CustomLanguage_SupportsAutoUniforms(langID)));
+
+							spvParser.Parse(pass->TCSSPV);
+							TextEditor* tEdit = codeEditor->Get(spvItem, ed::ShaderStage::TessellationControl);
+							if (tEdit != nullptr) codeEditor->FillAutocomplete(tEdit, spvParser);
+							if (settings.General.AutoUniforms && (plugin == nullptr || (plugin != nullptr && plugin->CustomLanguage_SupportsAutoUniforms(langID))))
+								m_autoUniforms(pass->Variables, spvParser, allUniforms);
+						}
+						if (pass->TESSPV.size() > 0) {
+							int langID = -1;
+							IPlugin1* plugin = ShaderCompiler::GetPluginLanguageFromExtension(&langID, pass->TESPath, m_data->Plugins.Plugins());
+
+							deleteUnusedVariables &= (plugin == nullptr || (plugin != nullptr && plugin->CustomLanguage_SupportsAutoUniforms(langID)));
+
+							spvParser.Parse(pass->TESSPV);
+							TextEditor* tEdit = codeEditor->Get(spvItem, ed::ShaderStage::TessellationEvaluation);
+							if (tEdit != nullptr) codeEditor->FillAutocomplete(tEdit, spvParser);
+							if (settings.General.AutoUniforms && (plugin == nullptr || (plugin != nullptr && plugin->CustomLanguage_SupportsAutoUniforms(langID))))
+								m_autoUniforms(pass->Variables, spvParser, allUniforms);
+						}
+
+						if (settings.General.AutoUniforms && deleteUnusedVariables && settings.General.AutoUniformsDelete && 
+							pass->VSSPV.size() > 0 && pass->PSSPV.size() > 0 && ((pass->GSUsed && pass->GSSPV.size()>0) || !pass->GSUsed) &&
+							((pass->TSUsed && pass->TCSSPV.size() > 0 && pass->TESSPV.size() > 0) || !pass->TSUsed))
 							m_deleteUnusedUniforms(pass->Variables, allUniforms);
 					} else if (spvItem->Type == PipelineItem::ItemType::ComputePass) {
 						pipe::ComputePass* pass = (pipe::ComputePass*)spvItem->Data;
@@ -644,7 +727,7 @@ namespace ed {
 					}
 
 					if (cont)
-						igfd::ImGuiFileDialog::Instance()->OpenModal("OpenProjectDlg", "Open SHADERed project", "SHADERed project (*.sprj){.sprj},.*", ".");
+						ifd::FileDialog::Instance().Open("OpenProjectDlg", "Open SHADERed project", "SHADERed project (*.sprj){.sprj},.*");
 				}
 				if (ImGui::BeginMenu("Open Recent")) {
 					int recentCount = 0;
@@ -731,6 +814,8 @@ namespace ed {
 					ImGui::Separator();
 					if (ImGui::MenuItem("Texture", KeyboardShortcuts::Instance().GetString("Project.NewTexture").c_str()))
 						this->CreateNewTexture();
+					if (ImGui::MenuItem("Texture 3D", KeyboardShortcuts::Instance().GetString("Project.NewTexture3D").c_str()))
+						this->CreateNewTexture3D();
 					if (ImGui::MenuItem("Cubemap", KeyboardShortcuts::Instance().GetString("Project.NewCubeMap").c_str()))
 						this->CreateNewCubemap();
 					if (ImGui::MenuItem("Audio", KeyboardShortcuts::Instance().GetString("Project.NewAudio").c_str()))
@@ -798,37 +883,33 @@ namespace ed {
 				ImGui::EndMenu();
 			}
 			if (ImGui::BeginMenu("Window")) {
+				// casual window controls
 				for (auto& view : m_views) {
 					if (view->Name != "Code") // dont show the "Code" UI view in this menu
 						ImGui::MenuItem(view->Name.c_str(), 0, &view->Visible);
 				}
 
+				// frame analysis control
+				bool isFrameAnalyzed = ((PreviewUI*)Get(ViewID::Preview))->IsFrameAnalyzed();
+				if (!isFrameAnalyzed) {
+					ImGui::PushItemFlag(ImGuiItemFlags_Disabled, true);
+					ImGui::PushStyleVar(ImGuiStyleVar_Alpha, ImGui::GetStyle().Alpha * 0.5f);
+				}
+				ImGui::MenuItem(m_frameAnalysis->Name.c_str(), 0, &m_frameAnalysis->Visible);
+				if (!isFrameAnalyzed) {
+					ImGui::PopStyleVar();
+					ImGui::PopItemFlag();
+				}
+
+				// debug window controls
 				if (ImGui::BeginMenu("Debug")) {
 					if (!m_data->Debugger.IsDebugging()) {
 						ImGui::PushItemFlag(ImGuiItemFlags_Disabled, true);
 						ImGui::PushStyleVar(ImGuiStyleVar_Alpha, ImGui::GetStyle().Alpha * 0.5f);
 					}
 
-					for (auto& dview : m_debugViews) {
-#ifndef BUILD_IMMEDIATE_MODE
-						bool isTempDisabled = (dview->Name == "Immediate" || dview->Name == "Watches"); // remove this later
-
-						if (isTempDisabled) {
-							ImGui::PushItemFlag(ImGuiItemFlags_Disabled, true);
-							ImGui::PushStyleVar(ImGuiStyleVar_Alpha, ImGui::GetStyle().Alpha * 0.5f);
-							dview->Visible = false;
-						}
-#endif
-
+					for (auto& dview : m_debugViews)
 						ImGui::MenuItem(dview->Name.c_str(), 0, &dview->Visible);
-
-#ifndef BUILD_IMMEDIATE_MODE
-						if (isTempDisabled) {
-							ImGui::PopStyleVar();
-							ImGui::PopItemFlag();
-						}
-#endif
-					}
 
 					if (!m_data->Debugger.IsDebugging()) {
 						ImGui::PopStyleVar();
@@ -843,6 +924,8 @@ namespace ed {
 				ImGui::Separator();
 
 				ImGui::MenuItem("Performance Mode", KeyboardShortcuts::Instance().GetString("Workspace.PerformanceMode").c_str(), &m_perfModeFake);
+				ImGui::MenuItem("Focus mode", KeyboardShortcuts::Instance().GetString("Workspace.FocusMode").c_str(), &m_focusModeTemp);
+				
 				if (ImGui::MenuItem("Options", KeyboardShortcuts::Instance().GetString("Workspace.Options").c_str())) {
 					m_optionsOpened = true;
 					*m_settingsBkp = settings;
@@ -877,11 +960,14 @@ namespace ed {
 					std::make_pair("Vladimir Alyamkin", "https://alyamkin.com"),
 					std::make_pair("Wogos Media", "http://theWogos.com"),
 					std::make_pair("Snow Developments", "https://snow.llc"),
-					std::make_pair("Adad Morales", "https://www.moralesfx.com/")
+					std::make_pair("Adad Morales", "https://www.moralesfx.com/"),
+					std::make_pair("Liam Don", "https://twitter.com/liamdon"),
+					std::make_pair("Andrew Kerr", ""),
+					std::make_pair("Chris Sprance", "https://csprance.com")
 				};
 
 				for (auto& sitem : slist)
-					if (ImGui::MenuItem(sitem.first.c_str()))
+					if (ImGui::MenuItem(sitem.first.c_str()) && !sitem.second.empty())
 						UIHelper::ShellOpen(sitem.second);
 
 				ImGui::EndMenu();
@@ -890,12 +976,21 @@ namespace ed {
 			ImGui::EndMainMenuBar();
 		}
 
-		if (m_performanceMode || m_minimalMode)
+		if (m_performanceMode || m_minimalMode || m_focusMode) {
 			((PreviewUI*)Get(ViewID::Preview))->Update(delta);
+
+			// focus mode
+			if (m_focusMode) 
+				m_renderFocusMode();
+		}
 
 		ImGui::End();
 
-		if (!m_performanceMode && !m_minimalMode) {
+		// DAP host mode
+		if (m_minimalMode && m_data->DAP.IsStarted())
+			m_renderDAPMode(delta);
+
+		if (!m_performanceMode && !m_minimalMode && !m_focusMode) {
 			m_data->Plugins.Update(delta);
 
 			for (auto& view : m_views)
@@ -906,33 +1001,41 @@ namespace ed {
 				}
 			if (m_data->Debugger.IsDebugging()) {
 				for (auto& dview : m_debugViews) {
-#ifdef BUILD_IMMEDIATE_MODE
 					if (dview->Visible) {
 						ImGui::SetNextWindowSizeConstraints(ImVec2(80, 80), ImVec2(m_width * 2, m_height * 2));
 						if (ImGui::Begin(dview->Name.c_str(), &dview->Visible)) dview->Update(delta);
 						ImGui::End();
 					}
-#else
-					if (dview->Visible && (dview->Name != "Immediate" && dview->Name != "Watches")) {
-						ImGui::SetNextWindowSizeConstraints(ImVec2(80, 80), ImVec2(m_width * 2, m_height * 2));
-						if (ImGui::Begin(dview->Name.c_str(), &dview->Visible)) dview->Update(delta);
-						ImGui::End();
-					}
-#endif
 				}
 				
+				// geometry output window
 				if (m_data->Debugger.GetStage() == ShaderStage::Geometry) {
 					ImGui::SetNextWindowSizeConstraints(ImVec2(80, 80), ImVec2(m_width * 2, m_height * 2));
 					if (ImGui::Begin(m_geometryOutput->Name.c_str())) m_geometryOutput->Update(delta);
 					ImGui::End();
 				}
+
+				// tessellation control shader output window
+				if (m_data->Debugger.GetStage() == ShaderStage::TessellationControl) {
+					ImGui::SetNextWindowSizeConstraints(ImVec2(80, 80), ImVec2(m_width * 2, m_height * 2));
+					if (ImGui::Begin(m_tessControlOutput->Name.c_str())) m_tessControlOutput->Update(delta);
+					ImGui::End();
+				}
 			}
 
+			// text editor windows
 			Get(ViewID::Code)->Update(delta);
 
 			// object preview
 			if (((ed::ObjectPreviewUI*)m_objectPrev)->ShouldRun())
 				m_objectPrev->Update(delta);
+
+			// frame analysis window
+			if (((PreviewUI*)Get(ViewID::Preview))->IsFrameAnalyzed() && m_frameAnalysis->Visible) {
+				if (ImGui::Begin(m_frameAnalysis->Name.c_str(), &m_frameAnalysis->Visible))
+					m_frameAnalysis->Update(delta);
+				ImGui::End();
+			}
 		}
 
 		// handle the "build occured" event
@@ -1176,12 +1279,19 @@ namespace ed {
 		CodeEditorUI* codeUI = (CodeEditorUI*)Get(ViewID::Code);
 		codeUI->StopDebugging();
 		m_data->Debugger.SetDebugging(false);
+		m_data->DAP.StopDebugging();
 	}
 	void GUIManager::Destroy()
 	{
-		std::string bookmarksFileLoc = Settings::Instance().ConvertPath("data/bookmarks.dat");
+		std::string bookmarksFileLoc = Settings::Instance().ConvertPath("data/filedialog.dat");
 		std::ofstream bookmarksFile(bookmarksFileLoc);
-		bookmarksFile << igfd::ImGuiFileDialog::Instance()->SerializeBookmarks();
+		int fdlgFileVersion = 0;
+		float fdlgZoom = ifd::FileDialog::Instance().GetZoom();
+		std::string bookmark;
+		bookmarksFile << fdlgFileVersion << std::endl;
+		bookmarksFile << fdlgZoom << std::endl;
+		for (const auto& fav : ifd::FileDialog::Instance().GetFavorites())
+			bookmarksFile << fav << std::endl;
 		bookmarksFile.close();
 
 		CodeEditorUI* codeUI = ((CodeEditorUI*)Get(ViewID::Code));
@@ -1250,7 +1360,7 @@ namespace ed {
 			}
 
 			if (cont)
-				igfd::ImGuiFileDialog::Instance()->OpenModal("OpenProjectDlg", "Open SHADERed project", "SHADERed project (*.sprj){.sprj},.*", ".");
+				ifd::FileDialog::Instance().Open("OpenProjectDlg", "Open SHADERed project", "SHADERed project (*.sprj){.sprj},.*");
 		}
 		m_tooltip("Open a project");
 		ImGui::SameLine();
@@ -1409,6 +1519,158 @@ namespace ed {
 		}
 	}
 
+	void GUIManager::m_renderFocusMode()
+	{
+		ImGui::SetCursorPos(ImVec2(10, Settings::Instance().CalculateSize(35.0f)));
+		ImGui::PushStyleColor(ImGuiCol_ChildBg, 0xB5000000 | (ImGui::GetColorU32(ImGuiCol_WindowBg) & 0x00FFFFFF));
+		ImGui::BeginChild("##focus_container", ImVec2(m_width / 2 - 50, -Settings::Instance().CalculateSize(10) - Settings::Instance().Preview.StatusBar * 35.0f), false);
+
+
+		if (ImGui::BeginTabBar("PassTabs")) {
+			auto& passes = m_data->Pipeline.GetList();
+			for (auto& pass : passes) {
+				if (pass->Type == PipelineItem::ItemType::ShaderPass) {
+					if (ImGui::BeginTabItem(pass->Name)) {
+						pipe::ShaderPass* passData = (pipe::ShaderPass*)pass->Data;
+
+						// shader tabs for this pass
+						if (ImGui::BeginTabBar("ShaderTabs")) {
+							CodeEditorUI* codeEditor = ((CodeEditorUI*)Get(ViewID::Code));
+
+							// vertex shader
+							if (ImGui::BeginTabItem("Vertex shader")) {
+								m_renderTextEditorFocusMode("Vertex shader editor", pass, ShaderStage::Vertex);
+								ImGui::EndTabItem();
+							}
+
+							// geometry shader if used
+							if (passData->GSUsed) {
+								// geometry shader
+								if (ImGui::BeginTabItem("Geometry shader")) {
+									m_renderTextEditorFocusMode("Geometry shader editor", pass, ShaderStage::Geometry);
+									ImGui::EndTabItem();
+								}
+							}
+
+							// tessellation shaders
+							if (passData->TSUsed) {
+								// tc shader
+								if (ImGui::BeginTabItem("Tessellation control shader")) {
+									m_renderTextEditorFocusMode("Tessellation control shader editor", pass, ShaderStage::TessellationControl);
+									ImGui::EndTabItem();
+								}
+
+								// te shader
+								if (ImGui::BeginTabItem("Tessellation evaluation shader")) {
+									m_renderTextEditorFocusMode("Tessellation evaluation shader editor", pass, ShaderStage::TessellationEvaluation);
+									ImGui::EndTabItem();
+								}
+							}
+
+							// pixel shader
+							if (ImGui::BeginTabItem("Pixel shader")) {
+								m_renderTextEditorFocusMode("Pixel shader editor", pass, ShaderStage::Pixel);
+								ImGui::EndTabItem();
+							}
+
+							ImGui::EndTabBar();
+						}
+
+
+						ImGui::EndTabItem();
+					}
+				} else if (pass->Type == PipelineItem::ItemType::ComputePass) {
+					if (ImGui::BeginTabItem(pass->Name)) {
+						pipe::ComputePass* passData = (pipe::ComputePass*)pass->Data;
+
+						// shader tabs for this pass
+						if (ImGui::BeginTabBar("ShaderTabs")) {
+							CodeEditorUI* codeEditor = ((CodeEditorUI*)Get(ViewID::Code));
+
+							// vertex shader
+							if (ImGui::BeginTabItem("Compute shader")) {
+								m_renderTextEditorFocusMode("Compute shader editor", pass, ShaderStage::Compute);
+								ImGui::EndTabItem();
+							}
+
+							ImGui::EndTabBar();
+						}
+
+						ImGui::EndTabItem();
+					}
+				}
+			}
+			ImGui::EndTabBar();
+		}
+
+		ImGui::EndChild();
+		ImGui::PopStyleColor();
+	}
+	void GUIManager::m_renderTextEditorFocusMode(const std::string& name, void* item, ShaderStage stage)
+	{
+		CodeEditorUI* codeEditor = ((CodeEditorUI*)Get(ViewID::Code));
+
+		TextEditor* editor = codeEditor->Get((PipelineItem*)item, stage);
+		if (editor == nullptr) {
+			codeEditor->Open((PipelineItem*)item, stage);
+			editor = codeEditor->Get((PipelineItem*)item, stage);
+		}
+
+		codeEditor->DrawTextEditor(name, editor);
+	}
+
+	void GUIManager::m_renderDAPMode(float delta)
+	{
+		// PIXEL INSPECT //
+		ImGui::SetNextWindowPos(ImVec2(m_width - 310, m_height - 420));
+		ImGui::SetNextWindowSize(ImVec2(280, 390), ImGuiCond_Always);
+		ImGui::PushStyleColor(ImGuiCol_WindowBg, 0xB5000000 | (ImGui::GetColorU32(ImGuiCol_WindowBg) & 0x00FFFFFF));
+		ImGui::PushStyleColor(ImGuiCol_ChildBg, 0x55000000 | (ImGui::GetColorU32(ImGuiCol_WindowBg) & 0x00FFFFFF));
+		ImGui::Begin("##dap_wnd_pixelinsp", 0, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize);
+
+		Get(ViewID::PixelInspect)->Update(delta); // is delta necessary for the PixelInspect window?
+
+		ImGui::End();
+		ImGui::PopStyleColor(2);
+
+
+		
+		if (m_data->Debugger.IsDebugging()) {
+			// GS OUTPUT WINDOW //
+			if (m_data->Debugger.GetStage() == ShaderStage::Geometry) {
+				float gsWidth = (m_width / (float)m_height) * 390.0f;
+
+				ImGui::SetNextWindowPos(ImVec2(m_width - 310 - 30 - gsWidth, m_height - 420));
+				ImGui::SetNextWindowSize(ImVec2(gsWidth, 390), ImGuiCond_Always);
+				ImGui::PushStyleColor(ImGuiCol_WindowBg, 0xB5000000 | (ImGui::GetColorU32(ImGuiCol_WindowBg) & 0x00FFFFFF));
+				ImGui::PushStyleColor(ImGuiCol_ChildBg, 0x55000000 | (ImGui::GetColorU32(ImGuiCol_WindowBg) & 0x00FFFFFF));
+				ImGui::Begin("##dap_wnd_gsoutput", 0, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize);
+
+				Get(ViewID::DebugGeometryOutput)->Update(delta);
+
+				ImGui::End();
+				ImGui::PopStyleColor(2);
+			}
+
+
+			// TS CONTROL OUTPUT //
+			else if (m_data->Debugger.GetStage() == ShaderStage::TessellationControl) {
+				float tsWidth = 280;
+
+				ImGui::SetNextWindowPos(ImVec2(m_width - 310 - 30 - tsWidth, m_height - 420));
+				ImGui::SetNextWindowSize(ImVec2(tsWidth, 390), ImGuiCond_Always);
+				ImGui::PushStyleColor(ImGuiCol_WindowBg, 0xB5000000 | (ImGui::GetColorU32(ImGuiCol_WindowBg) & 0x00FFFFFF));
+				ImGui::PushStyleColor(ImGuiCol_ChildBg, 0x55000000 | (ImGui::GetColorU32(ImGuiCol_WindowBg) & 0x00FFFFFF));
+				ImGui::Begin("##dap_wnd_tcsoutput", 0, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize);
+
+				Get(ViewID::DebugTessControlOutput)->Update(delta); // TODO: doesn't work for some reason
+
+				ImGui::End();
+				ImGui::PopStyleColor(2);
+			}
+		}
+	}
+
 	UIView* GUIManager::Get(ViewID view)
 	{
 		if (view == ViewID::Options)
@@ -1419,6 +1681,10 @@ namespace ed {
 			return m_debugViews[(int)view - (int)ViewID::DebugWatch];
 		else if (view == ViewID::DebugGeometryOutput)
 			return m_geometryOutput;
+		else if (view == ViewID::DebugTessControlOutput)
+			return m_tessControlOutput;
+		else if (view == ViewID::FrameAnalysis)
+			return m_frameAnalysis;
 
 		return m_views[(int)view];
 	}
@@ -1460,10 +1726,6 @@ namespace ed {
 		Get(ViewID::Code)->Visible = false;
 
 		((OptionsUI*)m_options)->ApplyTheme();
-	}
-	void GUIManager::m_imguiHandleEvent(const SDL_Event& e)
-	{
-		ImGui_ImplSDL2_ProcessEvent(&e);
 	}
 	ShaderVariable::ValueType getTypeFromSPV(SPIRVParser::ValueType valType)
 	{
@@ -1705,7 +1967,7 @@ namespace ed {
 		m_saveAsRestoreCache = restoreCached;
 		m_saveAsHandle = handle;
 		m_saveAsPreHandle = preHandle;
-		igfd::ImGuiFileDialog::Instance()->OpenModal("SaveProjectDlg", "Save project", "SHADERed project (*.sprj){.sprj},.*", ".");
+		ifd::FileDialog::Instance().Save("SaveProjectDlg", "Save project", "SHADERed project (*.sprj){.sprj},.*");
 	}
 	void GUIManager::Open(const std::string& file)
 	{
@@ -1986,11 +2248,15 @@ namespace ed {
 	}
 	void GUIManager::CreateNewTexture()
 	{
-		igfd::ImGuiFileDialog::Instance()->OpenModal("CreateTextureDlg", "Select texture(s)", "Image file (*.png;*.jpg;*.jpeg;*.bmp;*.tga){.png,.jpg,.jpeg,.bmp,.tga},.*", ".", 0);
+		ifd::FileDialog::Instance().Open("CreateTextureDlg", "Select texture(s)", "Image file (*.png;*.jpg;*.jpeg;*.bmp;*.tga;*.dds){.png,.jpg,.jpeg,.bmp,.tga,.dds},.*", true);
+	}
+	void GUIManager::CreateNewTexture3D()
+	{
+		ifd::FileDialog::Instance().Open("CreateTexture3DDlg", "Select texture(s)", "DDS file (*.dds){.dds},.*", true);
 	}
 	void GUIManager::CreateNewAudio()
 	{
-		igfd::ImGuiFileDialog::Instance()->OpenModal("CreateAudioDlg", "Select audio file", "Audio file (*.wav;*.flac;*.ogg;*.midi){.wav,.flac,.ogg,.midi},.*", ".", 0);
+		ifd::FileDialog::Instance().Open("CreateAudioDlg", "Select audio file", "Audio file (*.wav;*.flac;*.ogg;*.midi){.wav,.flac,.ogg,.midi},.*");
 	}
 
 	void GUIManager::m_renderPopups(float delta)
@@ -2111,44 +2377,46 @@ namespace ed {
 		}
 
 		// File dialogs (open project, create texture, create audio, pick cubemap face texture)
-		if (igfd::ImGuiFileDialog::Instance()->FileDialog("OpenProjectDlg")) {
-			if (igfd::ImGuiFileDialog::Instance()->IsOk) {
-				std::string filePathName = igfd::ImGuiFileDialog::Instance()->GetFilepathName();
-				Open(filePathName);
+		if (ifd::FileDialog::Instance().IsDone("OpenProjectDlg")) {
+			if (ifd::FileDialog::Instance().HasResult()) 
+				Open(ifd::FileDialog::Instance().GetResult().u8string());
+
+			ifd::FileDialog::Instance().Close();
+		}
+		if (ifd::FileDialog::Instance().IsDone("CreateTextureDlg")) {
+			if (ifd::FileDialog::Instance().HasResult()) {
+				const std::vector<std::filesystem::path>& results = ifd::FileDialog::Instance().GetResults();
+				for (const auto& res : results)
+					m_data->Objects.CreateTexture(res.u8string());
 			}
 
-			igfd::ImGuiFileDialog::Instance()->CloseDialog("OpenProjectDlg");
+			ifd::FileDialog::Instance().Close();
 		}
-		if (igfd::ImGuiFileDialog::Instance()->FileDialog("CreateTextureDlg")) {
-			if (igfd::ImGuiFileDialog::Instance()->IsOk) {
-				auto sel = igfd::ImGuiFileDialog::Instance()->GetSelection();
-
-				for (auto pair : sel) {
-					std::string file = m_data->Parser.GetRelativePath(pair.second);
-					if (!file.empty())
-						m_data->Objects.CreateTexture(file);
-				}
+		if (ifd::FileDialog::Instance().IsDone("CreateTexture3DDlg")) {
+			if (ifd::FileDialog::Instance().HasResult()) {
+				const std::vector<std::filesystem::path>& results = ifd::FileDialog::Instance().GetResults();
+				for (const auto& res : results)
+					m_data->Objects.CreateTexture3D(res.u8string());
 			}
 
-			igfd::ImGuiFileDialog::Instance()->CloseDialog("CreateTextureDlg");
+			ifd::FileDialog::Instance().Close();
 		}
-		if (igfd::ImGuiFileDialog::Instance()->FileDialog("CreateAudioDlg")) {
-			if (igfd::ImGuiFileDialog::Instance()->IsOk) {
-				std::string filepath = igfd::ImGuiFileDialog::Instance()->GetFilepathName();
-				std::string rfile = m_data->Parser.GetRelativePath(filepath);
+		if (ifd::FileDialog::Instance().IsDone("CreateAudioDlg")) {
+			if (ifd::FileDialog::Instance().HasResult()) {
+				std::string rfile = m_data->Parser.GetRelativePath(ifd::FileDialog::Instance().GetResult().u8string());
 				if (!rfile.empty())
 					m_data->Objects.CreateAudio(rfile);
 			}
 
-			igfd::ImGuiFileDialog::Instance()->CloseDialog("CreateAudioDlg");
+			ifd::FileDialog::Instance().Close();
 		}
-		if (igfd::ImGuiFileDialog::Instance()->FileDialog("SaveProjectDlg")) {
-			if (igfd::ImGuiFileDialog::Instance()->IsOk) {
+		if (ifd::FileDialog::Instance().IsDone("SaveProjectDlg")) {
+			if (ifd::FileDialog::Instance().HasResult()) {
 				if (m_saveAsPreHandle)
 					m_saveAsPreHandle();
 
-				std::string file = igfd::ImGuiFileDialog::Instance()->GetFilepathName();
-				m_data->Parser.SaveAs(file, true);
+				std::string fileName = ifd::FileDialog::Instance().GetResult().u8string();
+				m_data->Parser.SaveAs(fileName, true);
 
 				// cache opened code editors
 				CodeEditorUI* editor = ((CodeEditorUI*)Get(ViewID::Code));
@@ -2159,8 +2427,8 @@ namespace ed {
 				this->StopDebugging();
 				this->ResetWorkspace();
 
-				m_addProjectToRecents(file);
-				m_data->Parser.Open(file);
+				m_addProjectToRecents(fileName);
+				m_data->Parser.Open(fileName);
 
 				std::string projName = m_data->Parser.GetOpenedFile();
 				projName = projName.substr(projName.find_last_of("/\\") + 1);
@@ -2179,9 +2447,9 @@ namespace ed {
 			}
 
 			if (m_saveAsHandle != nullptr)
-				m_saveAsHandle(igfd::ImGuiFileDialog::Instance()->IsOk);
+				m_saveAsHandle(ifd::FileDialog::Instance().HasResult());
 
-			igfd::ImGuiFileDialog::Instance()->CloseDialog("SaveProjectDlg");
+			ifd::FileDialog::Instance().Close();
 		}
 
 		// Create RT popup
@@ -2227,7 +2495,7 @@ namespace ed {
 			ImGui::SetCursorPosX(ImGui::GetWindowWidth() - btnWidth);
 			if (ImGui::Button("Change##left")) {
 				m_cubemapPathPtr = &left;
-				igfd::ImGuiFileDialog::Instance()->OpenModal("CubemapFaceDlg", "Select cubemap face - left", "Image file (*.png;*.jpg;*.jpeg;*.bmp;*.tga){.png,.jpg,.jpeg,.bmp,.tga},.*", ".");
+				ifd::FileDialog::Instance().Open("CubemapFaceDlg", "Select cubemap face - left", "Image file (*.png;*.jpg;*.jpeg;*.bmp;*.tga;*.dds){.png,.jpg,.jpeg,.bmp,.tga,.dds},.*");
 			}
 
 			ImGui::Text("Top: %s", std::filesystem::path(top).filename().string().c_str());
@@ -2235,7 +2503,7 @@ namespace ed {
 			ImGui::SetCursorPosX(ImGui::GetWindowWidth() - btnWidth);
 			if (ImGui::Button("Change##top")) {
 				m_cubemapPathPtr = &top;
-				igfd::ImGuiFileDialog::Instance()->OpenModal("CubemapFaceDlg", "Select cubemap face - top", "Image file (*.png;*.jpg;*.jpeg;*.bmp;*.tga){.png,.jpg,.jpeg,.bmp,.tga},.*", ".");
+				ifd::FileDialog::Instance().Open("CubemapFaceDlg", "Select cubemap face - top", "Image file (*.png;*.jpg;*.jpeg;*.bmp;*.tga;*.dds){.png,.jpg,.jpeg,.bmp,.tga,.dds},.*");
 			}
 
 			ImGui::Text("Front: %s", std::filesystem::path(front).filename().string().c_str());
@@ -2243,7 +2511,7 @@ namespace ed {
 			ImGui::SetCursorPosX(ImGui::GetWindowWidth() - btnWidth);
 			if (ImGui::Button("Change##front")) {
 				m_cubemapPathPtr = &front;
-				igfd::ImGuiFileDialog::Instance()->OpenModal("CubemapFaceDlg", "Select cubemap face - front", "Image file (*.png;*.jpg;*.jpeg;*.bmp;*.tga){.png,.jpg,.jpeg,.bmp,.tga},.*", ".");
+				ifd::FileDialog::Instance().Open("CubemapFaceDlg", "Select cubemap face - front", "Image file (*.png;*.jpg;*.jpeg;*.bmp;*.tga;*.dds){.png,.jpg,.jpeg,.bmp,.tga,.dds},.*");
 			}
 
 			ImGui::Text("Bottom: %s", std::filesystem::path(bottom).filename().string().c_str());
@@ -2251,7 +2519,7 @@ namespace ed {
 			ImGui::SetCursorPosX(ImGui::GetWindowWidth() - btnWidth);
 			if (ImGui::Button("Change##bottom")) {
 				m_cubemapPathPtr = &bottom;
-				igfd::ImGuiFileDialog::Instance()->OpenModal("CubemapFaceDlg", "Select cubemap face - bottom", "Image file (*.png;*.jpg;*.jpeg;*.bmp;*.tga){.png,.jpg,.jpeg,.bmp,.tga},.*", ".");
+				ifd::FileDialog::Instance().Open("CubemapFaceDlg", "Select cubemap face - bottom", "Image file (*.png;*.jpg;*.jpeg;*.bmp;*.tga;*.dds){.png,.jpg,.jpeg,.bmp,.tga,.dds},.*");
 			}
 
 			ImGui::Text("Right: %s", std::filesystem::path(right).filename().string().c_str());
@@ -2259,7 +2527,7 @@ namespace ed {
 			ImGui::SetCursorPosX(ImGui::GetWindowWidth() - btnWidth);
 			if (ImGui::Button("Change##right")) {
 				m_cubemapPathPtr = &right;
-				igfd::ImGuiFileDialog::Instance()->OpenModal("CubemapFaceDlg", "Select cubemap face - right", "Image file (*.png;*.jpg;*.jpeg;*.bmp;*.tga){.png,.jpg,.jpeg,.bmp,.tga},.*", ".");
+				ifd::FileDialog::Instance().Open("CubemapFaceDlg", "Select cubemap face - right", "Image file (*.png;*.jpg;*.jpeg;*.bmp;*.tga;*.dds){.png,.jpg,.jpeg,.bmp,.tga,.dds},.*");
 			}
 
 			ImGui::Text("Back: %s", std::filesystem::path(back).filename().string().c_str());
@@ -2267,16 +2535,14 @@ namespace ed {
 			ImGui::SetCursorPosX(ImGui::GetWindowWidth() - btnWidth);
 			if (ImGui::Button("Change##back")) {
 				m_cubemapPathPtr = &back;
-				igfd::ImGuiFileDialog::Instance()->OpenModal("CubemapFaceDlg", "Select cubemap face - back", "Image file (*.png;*.jpg;*.jpeg;*.bmp;*.tga){.png,.jpg,.jpeg,.bmp,.tga},.*", ".");
+				ifd::FileDialog::Instance().Open("CubemapFaceDlg", "Select cubemap face - back", "Image file (*.png;*.jpg;*.jpeg;*.bmp;*.tga;*.dds){.png,.jpg,.jpeg,.bmp,.tga,.dds},.*");
 			}
 
-			if (igfd::ImGuiFileDialog::Instance()->FileDialog("CubemapFaceDlg")) {
-				if (igfd::ImGuiFileDialog::Instance()->IsOk && m_cubemapPathPtr != nullptr) {
-					std::string filepath = igfd::ImGuiFileDialog::Instance()->GetFilepathName();
-					*m_cubemapPathPtr = m_data->Parser.GetRelativePath(filepath);
-				}
+			if (ifd::FileDialog::Instance().IsDone("CubemapFaceDlg")) {
+				if (ifd::FileDialog::Instance().HasResult() && m_cubemapPathPtr != nullptr)
+					*m_cubemapPathPtr = m_data->Parser.GetRelativePath(ifd::FileDialog::Instance().GetResult().u8string());
 
-				igfd::ImGuiFileDialog::Instance()->CloseDialog("CubemapFaceDlg");
+				ifd::FileDialog::Instance().Close();
 			}
 
 			if (ImGui::Button("Ok") && strlen(buf) > 0 && !m_data->Objects.Exists(buf)) {
@@ -2408,11 +2674,16 @@ namespace ed {
 		// Create about popup
 		ImGui::SetNextWindowSize(ImVec2(Settings::Instance().CalculateSize(270), Settings::Instance().CalculateSize(220)), ImGuiCond_Always);
 		if (ImGui::BeginPopupModal("About##main_about", 0, ImGuiWindowFlags_NoResize)) {
-			ImGui::TextWrapped("(C) 2020 dfranx");
+			ImGui::TextWrapped("(C) 2018 - 2021 dfranx");
 			ImGui::TextWrapped("Version %s", WebAPI::Version);
 			ImGui::TextWrapped("Internal version: %d", WebAPI::InternalVersion);
+			ImGui::TextWrapped("Compute shaders: %s", GLEW_ARB_compute_shader ? "true" : "false");
+			ImGui::TextWrapped("Tessellation shaders: %s", GLEW_ARB_tessellation_shader ? "true" : "false");
+			if (GLEW_ARB_tessellation_shader)
+				ImGui::TextWrapped("GL_MAX_PATCH_VERTICES: %d", m_data->Renderer.GetMaxPatchVertices());
+
 			ImGui::NewLine();
-			UIHelper::Markdown("This app is open sourced: [link](https://www.github.com/dfranx/SHADERed)");
+			UIHelper::Markdown("SHADERed is [open source](https://www.github.com/dfranx/SHADERed)");
 			ImGui::NewLine();
 
 			ImGui::Separator();
@@ -2491,11 +2762,11 @@ namespace ed {
 			ImGui::TextWrapped("Path: %s", m_previewSavePath.c_str());
 			ImGui::SameLine();
 			if (ImGui::Button("...##save_prev_path"))
-				igfd::ImGuiFileDialog::Instance()->OpenModal("SavePreviewDlg", "Save", "Image file (*.png;*.jpg;*.jpeg;*.bmp;*.tga){.png,.jpg,.jpeg,.bmp,.tga},.*", ".");
-			if (igfd::ImGuiFileDialog::Instance()->FileDialog("SavePreviewDlg")) {
-				if (igfd::ImGuiFileDialog::Instance()->IsOk)
-					m_previewSavePath = igfd::ImGuiFileDialog::Instance()->GetFilepathName();
-				igfd::ImGuiFileDialog::Instance()->CloseDialog("SavePreviewDlg");
+				ifd::FileDialog::Instance().Save("SavePreviewDlg", "Save", "Image file (*.png;*.jpg;*.jpeg;*.bmp;*.tga){.png,.jpg,.jpeg,.bmp,.tga},.*");
+			if (ifd::FileDialog::Instance().IsDone("SavePreviewDlg")) {
+				if (ifd::FileDialog::Instance().HasResult())
+					m_previewSavePath = ifd::FileDialog::Instance().GetResult().u8string();
+				ifd::FileDialog::Instance().Close();
 			}
 
 			ImGui::Text("Width: ");
@@ -2653,11 +2924,11 @@ namespace ed {
 			ImGui::TextWrapped("Output file: %s", m_expcppSavePath.c_str());
 			ImGui::SameLine();
 			if (ImGui::Button("...##expcpp_savepath"))
-				igfd::ImGuiFileDialog::Instance()->OpenModal("ExportCPPDlg", "Save", "C++ source file (*.cpp;*.cxx){.cpp,.cxx},.*", ".");
-			if (igfd::ImGuiFileDialog::Instance()->FileDialog("ExportCPPDlg")) {
-				if (igfd::ImGuiFileDialog::Instance()->IsOk)
-					m_expcppSavePath = igfd::ImGuiFileDialog::Instance()->GetFilepathName();
-				igfd::ImGuiFileDialog::Instance()->CloseDialog("ExportCPPDlg");
+				ifd::FileDialog::Instance().Save("ExportCPPDlg", "Save", "C++ source file (*.cpp;*.cxx){.cpp,.cxx},.*");
+			if (ifd::FileDialog::Instance().IsDone("ExportCPPDlg")) {
+				if (ifd::FileDialog::Instance().HasResult())
+					m_expcppSavePath = ifd::FileDialog::Instance().GetResult().u8string();
+				ifd::FileDialog::Instance().Close();
 			}
 
 			// store shaders in files
@@ -2791,7 +3062,7 @@ namespace ed {
 			}
 
 			if (cont)
-				igfd::ImGuiFileDialog::Instance()->OpenModal("OpenProjectDlg", "Open SHADERed project", "SHADERed project (*.sprj){.sprj},.*", ".");
+				ifd::FileDialog::Instance().Open("OpenProjectDlg", "Open SHADERed project", "SHADERed project (*.sprj){.sprj},.*");
 		});
 		KeyboardShortcuts::Instance().SetCallback("Project.New", [=]() {
 			this->ResetWorkspace();
@@ -2817,6 +3088,9 @@ namespace ed {
 		});
 		KeyboardShortcuts::Instance().SetCallback("Project.NewTexture", [=]() {
 			CreateNewTexture();
+		});
+		KeyboardShortcuts::Instance().SetCallback("Project.NewTexture3D", [=]() {
+			CreateNewTexture3D();
 		});
 		KeyboardShortcuts::Instance().SetCallback("Project.NewAudio", [=]() {
 			CreateNewAudio();
@@ -2846,6 +3120,10 @@ namespace ed {
 		KeyboardShortcuts::Instance().SetCallback("Workspace.PerformanceMode", [=]() {
 			m_performanceMode = !m_performanceMode;
 			m_perfModeFake = m_performanceMode;
+		});
+		KeyboardShortcuts::Instance().SetCallback("Workspace.FocusMode", [=]() {
+			m_focusMode = !m_focusMode;
+			m_focusModeTemp = m_focusMode;
 		});
 		KeyboardShortcuts::Instance().SetCallback("Workspace.HideOutput", [=]() {
 			Get(ViewID::Output)->Visible = !Get(ViewID::Output)->Visible;

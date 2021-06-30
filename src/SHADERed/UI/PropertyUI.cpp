@@ -6,7 +6,7 @@
 #include <SHADERed/UI/PropertyUI.h>
 #include <SHADERed/UI/UIHelper.h>
 
-#include <ImGuiFileDialog/ImGuiFileDialog.h>
+#include <misc/ImFileDialog.h>
 
 #include <imgui/imgui.h>
 #include <imgui/imgui_internal.h>
@@ -54,6 +54,8 @@ namespace ed {
 					ImGui::Text("Image");
 				else if (IsImage3D())
 					ImGui::Text("Image3D");
+				else if (IsTexture3D())
+					ImGui::Text("Texture3D");
 				else if (IsPlugin())
 					ImGui::Text(m_currentObj->Plugin->Type);
 				else
@@ -218,7 +220,7 @@ namespace ed {
 					if (ImGui::Button("...##pui_vsbtn", ImVec2(-1, 0))) {
 						m_dialogPath = item->VSPath;
 						m_dialogShaderType = "Vertex";
-						igfd::ImGuiFileDialog::Instance()->OpenModal("PropertyShaderDlg", "Select a shader", "GLSL & HLSL {.glsl,.hlsl,.vert,.vs,.frag,.fs,.geom,.gs,.comp,.cs,.slang,.shader},.*", ".");
+						ifd::FileDialog::Instance().Open("PropertyShaderDlg", "Select a shader", "GLSL & HLSL {.glsl,.hlsl,.vert,.vs,.frag,.fs,.geom,.gs,.comp,.cs,.slang,.shader},.*");
 					}
 					ImGui::NextColumn();
 
@@ -253,10 +255,9 @@ namespace ed {
 					if (ImGui::Button("...##pui_psbtn", ImVec2(-1, 0))) {
 						m_dialogPath = item->PSPath;
 						m_dialogShaderType = "Pixel";
-						igfd::ImGuiFileDialog::Instance()->OpenModal("PropertyShaderDlg", "Select a shader", "GLSL & HLSL {.glsl,.hlsl,.vert,.vs,.frag,.fs,.geom,.gs,.comp,.cs,.slang,.shader},.*", ".");
+						ifd::FileDialog::Instance().Open("PropertyShaderDlg", "Select a shader", "GLSL & HLSL {.glsl,.hlsl,.vert,.vs,.frag,.fs,.geom,.gs,.comp,.cs,.slang,.shader},.*");
 					}
 					ImGui::NextColumn();
-
 					ImGui::Separator();
 
 					/* pixel shader entry */
@@ -271,8 +272,9 @@ namespace ed {
 					} else
 						ImGui::Text("main");
 					ImGui::NextColumn();
-
 					ImGui::Separator();
+
+
 
 					// gs used
 					ImGui::Text("GS:");
@@ -283,7 +285,8 @@ namespace ed {
 					ImGui::NextColumn();
 					ImGui::Separator();
 
-					if (!item->GSUsed) ImGui::PushItemFlag(ImGuiItemFlags_Disabled, true);
+					if (!item->GSUsed) 
+						ImGui::PushItemFlag(ImGuiItemFlags_Disabled, true);
 
 					// gs path
 					ImGui::Text("GS path:");
@@ -297,7 +300,7 @@ namespace ed {
 					if (ImGui::Button("...##pui_gsbtn", ImVec2(-1, 0))) {
 						m_dialogPath = item->GSPath;
 						m_dialogShaderType = "Geometry";
-						igfd::ImGuiFileDialog::Instance()->OpenModal("PropertyShaderDlg", "Select a shader", "GLSL & HLSL {.glsl,.hlsl,.vert,.vs,.frag,.fs,.geom,.gs,.comp,.cs,.slang,.shader},.*", ".");
+						ifd::FileDialog::Instance().Open("PropertyShaderDlg", "Select a shader", "GLSL & HLSL {.glsl,.hlsl,.vert,.vs,.frag,.fs,.geom,.gs,.comp,.cs,.slang,.shader},.*");
 					}
 					ImGui::NextColumn();
 					ImGui::Separator();
@@ -313,9 +316,97 @@ namespace ed {
 					} else
 						ImGui::Text("main");
 					ImGui::NextColumn();
+					ImGui::Separator();
 
-					if (!item->GSUsed) ImGui::PopItemFlag();
-				} else if (m_current->Type == ed::PipelineItem::ItemType::ComputePass) {
+					if (!item->GSUsed) 
+						ImGui::PopItemFlag();
+
+
+					
+					// ts used
+					ImGui::Text("TS:");
+					ImGui::NextColumn();
+					ImGui::PushItemWidth(-1);
+					if (ImGui::Checkbox("##pui_tsuse", &item->TSUsed))
+						m_data->Parser.ModifyProject();
+					ImGui::NextColumn();
+					ImGui::Separator();
+
+					if (!item->TSUsed) 
+						ImGui::PushItemFlag(ImGuiItemFlags_Disabled, true);
+
+					// patch vertices
+					ImGui::Text("Patch vertices:");
+					ImGui::NextColumn();
+					ImGui::PushItemWidth(-1);
+					if (ImGui::DragInt("##cui_sptspatchverts", &item->TSPatchVertices, 1.0f, 1, m_data->Renderer.GetMaxPatchVertices()))
+						item->TSPatchVertices = std::max(1, std::min(m_data->Renderer.GetMaxPatchVertices(), item->TSPatchVertices));
+					ImGui::NextColumn();
+					ImGui::Separator();
+
+					// tcs path
+					ImGui::Text("TCS path:");
+					ImGui::NextColumn();
+					ImGui::PushItemWidth(BUTTON_SPACE_LEFT);
+					ImGui::PushItemFlag(ImGuiItemFlags_Disabled, true);
+					ImGui::InputText("##pui_tcspath", item->TCSPath, SHADERED_MAX_PATH);
+					ImGui::PopItemFlag();
+					ImGui::PopItemWidth();
+					ImGui::SameLine();
+					if (ImGui::Button("...##pui_tcsbtn", ImVec2(-1, 0))) {
+						m_dialogPath = item->TCSPath;
+						m_dialogShaderType = "Tessellation Control";
+						ifd::FileDialog::Instance().Open("PropertyShaderDlg", "Select a shader", "GLSL & HLSL {.glsl,.hlsl,.vert,.vs,.frag,.fs,.geom,.gs,.comp,.cs,.tess,.tcs,.tes,.slang,.shader},.*");
+					}
+					ImGui::NextColumn();
+					ImGui::Separator();
+
+					// tcs entry
+					ImGui::Text("TCS entry:");
+					ImGui::NextColumn();
+					if (ShaderCompiler::GetShaderLanguageFromExtension(item->TCSPath) != ShaderLanguage::GLSL) {
+						ImGui::PushItemWidth(-1);
+						if (ImGui::InputText("##pui_tcsentry", item->TCSEntry, 32))
+							m_data->Parser.ModifyProject();
+						ImGui::PopItemWidth();
+					} else
+						ImGui::Text("main");
+					ImGui::NextColumn();
+					ImGui::Separator();
+
+					// tes path
+					ImGui::Text("TES path:");
+					ImGui::NextColumn();
+					ImGui::PushItemWidth(BUTTON_SPACE_LEFT);
+					ImGui::PushItemFlag(ImGuiItemFlags_Disabled, true);
+					ImGui::InputText("##pui_tespath", item->TESPath, SHADERED_MAX_PATH);
+					ImGui::PopItemFlag();
+					ImGui::PopItemWidth();
+					ImGui::SameLine();
+					if (ImGui::Button("...##pui_tesbtn", ImVec2(-1, 0))) {
+						m_dialogPath = item->TESPath;
+						m_dialogShaderType = "Tessellation Evaluation";
+						ifd::FileDialog::Instance().Open("PropertyShaderDlg", "Select a shader", "GLSL & HLSL {.glsl,.hlsl,.vert,.vs,.frag,.fs,.geom,.gs,.comp,.cs,.tess,.tcs,.tes,.slang,.shader},.*");
+					}
+					ImGui::NextColumn();
+					ImGui::Separator();
+
+					// tes entry
+					ImGui::Text("TES entry:");
+					ImGui::NextColumn();
+					if (ShaderCompiler::GetShaderLanguageFromExtension(item->TESPath) != ShaderLanguage::GLSL) {
+						ImGui::PushItemWidth(-1);
+						if (ImGui::InputText("##pui_tesentry", item->TESEntry, 32))
+							m_data->Parser.ModifyProject();
+						ImGui::PopItemWidth();
+					} else
+						ImGui::Text("main");
+					ImGui::NextColumn();
+
+					if (!item->TSUsed) 
+						ImGui::PopItemFlag();
+				} 
+				else if (m_current->Type == ed::PipelineItem::ItemType::ComputePass) {
 					ed::pipe::ComputePass* item = reinterpret_cast<ed::pipe::ComputePass*>(m_current->Data);
 
 					/* compute shader path */
@@ -331,7 +422,7 @@ namespace ed {
 					if (ImGui::Button("...##pui_csbtn", ImVec2(-1, 0))) {
 						m_dialogPath = item->Path;
 						m_dialogShaderType = "Compute";
-						igfd::ImGuiFileDialog::Instance()->OpenModal("PropertyShaderDlg", "Select a shader", "GLSL & HLSL {.glsl,.hlsl,.vert,.vs,.frag,.fs,.geom,.gs,.comp,.cs,.slang,.shader},.*", ".");
+						ifd::FileDialog::Instance().Open("PropertyShaderDlg", "Select a shader", "GLSL & HLSL {.glsl,.hlsl,.vert,.vs,.frag,.fs,.geom,.gs,.comp,.cs,.slang,.shader},.*");
 					}
 					ImGui::NextColumn();
 					ImGui::Separator();
@@ -364,7 +455,8 @@ namespace ed {
 
 						m_data->Parser.ModifyProject();
 					}
-				} else if (m_current->Type == ed::PipelineItem::ItemType::AudioPass) {
+				} 
+				else if (m_current->Type == ed::PipelineItem::ItemType::AudioPass) {
 					ed::pipe::AudioPass* item = reinterpret_cast<ed::pipe::AudioPass*>(m_current->Data);
 
 					/* audio shader path */
@@ -380,9 +472,10 @@ namespace ed {
 					if (ImGui::Button("...##pui_ssbtn", ImVec2(-1, 0))) {
 						m_dialogPath = item->Path;
 						m_dialogShaderType = "Audio";
-						igfd::ImGuiFileDialog::Instance()->OpenModal("PropertyShaderDlg", "Select a shader", "GLSL & HLSL {.glsl,.hlsl,.vert,.vs,.frag,.fs,.geom,.gs,.comp,.cs,.slang,.shader},.*", ".");
+						ifd::FileDialog::Instance().Open("PropertyShaderDlg", "Select a shader", "GLSL & HLSL {.glsl,.hlsl,.vert,.vs,.frag,.fs,.geom,.gs,.comp,.cs,.slang,.shader},.*");
 					}
-				} else if (m_current->Type == ed::PipelineItem::ItemType::Geometry) {
+				} 
+				else if (m_current->Type == ed::PipelineItem::ItemType::Geometry) {
 					ed::pipe::GeometryItem* item = reinterpret_cast<ed::pipe::GeometryItem*>(m_current->Data);
 
 					/* position */
@@ -502,7 +595,8 @@ namespace ed {
 						ImGui::EndCombo();
 					}
 					ImGui::PopItemWidth();
-				} else if (m_current->Type == PipelineItem::ItemType::RenderState) {
+				} 
+				else if (m_current->Type == PipelineItem::ItemType::RenderState) {
 					pipe::RenderState* data = (pipe::RenderState*)m_current->Data;
 
 					// enable/disable wireframe rendering
@@ -827,7 +921,8 @@ namespace ed {
 						ImGui::PopItemFlag();
 						ImGui::PopStyleVar();
 					}
-				} else if (m_current->Type == ed::PipelineItem::ItemType::Model) {
+				} 
+				else if (m_current->Type == ed::PipelineItem::ItemType::Model) {
 					ed::pipe::Model* item = reinterpret_cast<ed::pipe::Model*>(m_current->Data);
 
 					/* position */
@@ -927,12 +1022,14 @@ namespace ed {
 						ImGui::EndCombo();
 					}
 					ImGui::PopItemWidth();
-				} else if (m_current->Type == ed::PipelineItem::ItemType::PluginItem) {
+				} 
+				else if (m_current->Type == ed::PipelineItem::ItemType::PluginItem) {
 					ImGui::Columns(1);
 
 					pipe::PluginItemData* pdata = (pipe::PluginItemData*)m_current->Data;
 					pdata->Owner->PipelineItem_ShowProperties(pdata->Type, pdata->PluginData);
-				} else if (m_current->Type == ed::PipelineItem::ItemType::VertexBuffer) {
+				} 
+				else if (m_current->Type == ed::PipelineItem::ItemType::VertexBuffer) {
 					ed::pipe::VertexBuffer* item = reinterpret_cast<ed::pipe::VertexBuffer*>(m_current->Data);
 
 					/* buffers */
@@ -1031,7 +1128,8 @@ namespace ed {
 					}
 					ImGui::PopItemWidth();
 				} 
-			} else if (IsRenderTexture()) {
+			} 
+			else if (IsRenderTexture()) {
 				ed::RenderTextureObject* m_currentRT = m_currentObj->RT;
 
 				/* FIXED SIZE */
@@ -1124,7 +1222,8 @@ namespace ed {
 					ImGui::PopStyleVar();
 					ImGui::PopItemFlag();
 				}
-			} else if (IsImage()) {
+			} 
+			else if (IsImage()) {
 				ed::ImageObject* m_currentImg = m_currentObj->Image;
 
 				/* SIZE */
@@ -1199,7 +1298,8 @@ namespace ed {
 						m_data->Objects.UploadDataToImage(m_currentImg, tex, texSize);
 					}
 				}
-			} else if (IsTexture()) {
+			} 
+			else if (IsTexture()) {
 				/* texture path */
 				ImGui::Text("Path:");
 				ImGui::NextColumn();
@@ -1210,7 +1310,7 @@ namespace ed {
 				ImGui::PopItemWidth();
 				ImGui::SameLine();
 				if (ImGui::Button("...##pui_texbtn", ImVec2(-1, 0)))
-					igfd::ImGuiFileDialog::Instance()->OpenModal("PropertyTextureDlg", "Select a texture", "Image file (*.png;*.jpg;*.jpeg;*.bmp;*.tga){.png,.jpg,.jpeg,.bmp,.tga},.*", ".");
+					ifd::FileDialog::Instance().Open("PropertyTextureDlg", "Select a texture", "Image file (*.png;*.jpg;*.jpeg;*.bmp;*.tga;*.dds){.png,.jpg,.jpeg,.bmp,.tga,.dds},.*");
 				ImGui::NextColumn();
 				ImGui::Separator();
 
@@ -1270,7 +1370,8 @@ namespace ed {
 					m_data->Objects.UpdateTextureParameters(m_itemName);
 					m_data->Parser.ModifyProject();
 				}
-			} else if (IsImage3D()) {
+			} 
+			else if (IsImage3D()) {
 				ed::Image3DObject* m_currentImg3D = m_currentObj->Image3D;
 
 				/* SIZE */
@@ -1310,7 +1411,77 @@ namespace ed {
 					ImGui::EndCombo();
 				}
 				ImGui::PopItemWidth();
-			} else if (IsPlugin()) {
+			} 
+			else if (IsTexture3D()) {
+				/* texture path */
+				ImGui::Text("Path:");
+				ImGui::NextColumn();
+				ImGui::PushItemWidth(BUTTON_SPACE_LEFT);
+				ImGui::PushItemFlag(ImGuiItemFlags_Disabled, true);
+				ImGui::InputText("##pui_tex3dpath", const_cast<char*>(m_currentObj->Name.c_str()), SHADERED_MAX_PATH); // not like it's going to be modified, amirite
+				ImGui::PopItemFlag();
+				ImGui::PopItemWidth();
+				ImGui::SameLine();
+				if (ImGui::Button("...##pui_texbtn", ImVec2(-1, 0)))
+					ifd::FileDialog::Instance().Open("PropertyTextureDlg", "Select a texture", "DDS file (*.dds){.dds},.*");
+				ImGui::NextColumn();
+				ImGui::Separator();
+
+				/* MIN FILTER */
+				ImGui::Text("MinFilter:");
+				ImGui::NextColumn();
+				ImGui::PushItemWidth(-1);
+				bool paramsUpdated = false;
+				if (UIHelper::CreateTextureMinFilterCombo("##prop_tex3d_min", m_currentObj->Texture_MinFilter))
+					paramsUpdated = true;
+				ImGui::PopItemWidth();
+				ImGui::NextColumn();
+				ImGui::Separator();
+
+				/* MAG FILTER */
+				ImGui::Text("MagFilter:");
+				ImGui::NextColumn();
+				ImGui::PushItemWidth(-1);
+				if (UIHelper::CreateTextureMagFilterCombo("##prop_tex3d_mag", m_currentObj->Texture_MagFilter))
+					paramsUpdated = true;
+				ImGui::PopItemWidth();
+				ImGui::NextColumn();
+				ImGui::Separator();
+
+				/* WRAP S */
+				ImGui::Text("Wrap S:");
+				ImGui::NextColumn();
+				ImGui::PushItemWidth(-1);
+				if (UIHelper::CreateTextureWrapCombo("##prop_tex3d_wrap_s", m_currentObj->Texture_WrapS))
+					paramsUpdated = true;
+				ImGui::PopItemWidth();
+				ImGui::NextColumn();
+				ImGui::Separator();
+
+				/* WRAP T */
+				ImGui::Text("Wrap T:");
+				ImGui::NextColumn();
+				ImGui::PushItemWidth(-1);
+				if (UIHelper::CreateTextureWrapCombo("##prop_tex3d_wrap_t", m_currentObj->Texture_WrapT))
+					paramsUpdated = true;
+				ImGui::PopItemWidth();
+				ImGui::NextColumn();
+
+				/* WRAP T */
+				ImGui::Text("Wrap R:");
+				ImGui::NextColumn();
+				ImGui::PushItemWidth(-1);
+				if (UIHelper::CreateTextureWrapCombo("##prop_tex3d_wrap_r", m_currentObj->Texture_WrapR))
+					paramsUpdated = true;
+				ImGui::PopItemWidth();
+				ImGui::NextColumn();
+
+				if (paramsUpdated) {
+					m_data->Objects.UpdateTextureParameters(m_itemName);
+					m_data->Parser.ModifyProject();
+				}
+			} 
+			else if (IsPlugin()) {
 				ImGui::Columns(1);
 
 				m_currentObj->Plugin->Owner->Object_ShowProperties(m_currentObj->Plugin->Type, m_currentObj->Plugin->Data, m_currentObj->Plugin->ID);
@@ -1324,9 +1495,9 @@ namespace ed {
 
 		
 		// file dialogs
-		if (igfd::ImGuiFileDialog::Instance()->FileDialog("PropertyShaderDlg")) {
-			if (igfd::ImGuiFileDialog::Instance()->IsOk) {
-				std::string file = igfd::ImGuiFileDialog::Instance()->GetFilepathName();
+		if (ifd::FileDialog::Instance().IsDone("PropertyShaderDlg")) {
+			if (ifd::FileDialog::Instance().HasResult()) {
+				std::string file = ifd::FileDialog::Instance().GetResult().u8string();
 				file = m_data->Parser.GetRelativePath(file);
 
 				strcpy(m_dialogPath, file.c_str());
@@ -1339,15 +1510,15 @@ namespace ed {
 				} else
 					m_data->Messages.Add(ed::MessageStack::Type::Error, m_current->Name, m_dialogShaderType + " shader file doesnt exist");
 			}
-			igfd::ImGuiFileDialog::Instance()->CloseDialog("PropertyShaderDlg");
+			ifd::FileDialog::Instance().Close();
 		}
-		if (igfd::ImGuiFileDialog::Instance()->FileDialog("PropertyTextureDlg")) {
-			if (igfd::ImGuiFileDialog::Instance()->IsOk) {
-				std::string file = igfd::ImGuiFileDialog::Instance()->GetFilepathName();
+		if (ifd::FileDialog::Instance().IsDone("PropertyTextureDlg")) {
+			if (ifd::FileDialog::Instance().HasResult()) {
+				std::string file = ifd::FileDialog::Instance().GetResult().u8string();
 				file = m_data->Parser.GetRelativePath(file);
 				m_data->Objects.ReloadTexture(m_currentObj, file);
 			}
-			igfd::ImGuiFileDialog::Instance()->CloseDialog("PropertyTextureDlg");
+			ifd::FileDialog::Instance().Close();
 		}
 	}
 	void PropertyUI::Open(ed::PipelineItem* item)
@@ -1380,12 +1551,13 @@ namespace ed {
 		Logger::Get().Log("Opening an ObjectManager item in the PropertyUI");
 
 		memset(m_itemName, 0, PIPELINE_ITEM_NAME_LENGTH);
-		memcpy(m_itemName, obj->Name.c_str(), obj->Name.size());
 
 		m_current = nullptr;
 		m_currentObj = obj;
 
-		if (obj != nullptr)
+		if (obj != nullptr) {
+			memcpy(m_itemName, obj->Name.c_str(), obj->Name.size());
 			Visible = true;
+		}
 	}
 }

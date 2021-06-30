@@ -25,6 +25,7 @@ namespace ed {
 			bool AutoOpenErrorWindow;
 			bool Toolbar;
 			bool Recovery; // [TODO] Not implemented
+			bool Profiler;
 			bool CheckUpdates;
 			bool CheckPluginUpdates;
 			bool RecompileOnFileChange;
@@ -69,6 +70,8 @@ namespace ed {
 			bool FunctionTooltips;
 			bool SyntaxHighlighting;
 			bool ScrollbarMarkers;
+			bool HighlightBrackets;
+			bool CodeFolding;
 			int TabSize;
 		} Editor;
 

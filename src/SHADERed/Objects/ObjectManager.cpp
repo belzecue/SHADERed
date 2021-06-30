@@ -5,15 +5,16 @@
 #include <SHADERed/Objects/Settings.h>
 #include <SHADERed/Engine/Model.h>
 
-#include <SFML/Audio/Sound.hpp>
-#include <SFML/Audio/SoundBuffer.hpp>
-
 #include <unordered_map>
 #include <fstream>
 
 #define STB_IMAGE_IMPLEMENTATION
-#include <stb/stb_image.h>
-#include <stb/stb_image_write.h>
+#include <misc/stb_image.h>
+#include <misc/stb_image_write.h>
+
+extern "C" {
+#include <misc/dds.h>
+}
 
 namespace ed {
 	ObjectManager::ObjectManager(ProjectParser* parser, RenderEngine* rnd)
@@ -137,9 +138,23 @@ namespace ed {
 	{
 		stbi_set_flip_vertically_on_load(0);
 
-		int nrChannels = 0;
-		unsigned char* data = stbi_load(path.c_str(), &w, &h, &nrChannels, 0);
+		bool isDDS = (std::filesystem::path(path).extension().u8string() == ".dds");
+
+		unsigned char* data = nullptr;
 		unsigned char* paddedData = nullptr;
+		dds_image_t ddsImage = nullptr;
+		int nrChannels = 0;
+
+		if (!isDDS) {
+			data = stbi_load(path.c_str(), &w, &h, &nrChannels, 0);
+		} else {
+			ddsImage = dds_load_from_file(path.c_str());
+
+			data = ddsImage->pixels;
+			w = ddsImage->header.width;
+			h = ddsImage->header.height;
+			nrChannels = 4;
+		}
 
 		if (nrChannels != 4) {
 			paddedData = (unsigned char*)malloc(w * h * 4);
@@ -166,7 +181,11 @@ namespace ed {
 
 		if (paddedData != nullptr)
 			free(paddedData);
-		stbi_image_free(data);
+
+		if (!isDDS)
+			stbi_image_free(data);
+		else
+			dds_image_free(ddsImage);
 	}
 
 	void ObjectManager::Clear()
@@ -247,13 +266,26 @@ namespace ed {
 			return false;
 		}
 
-		stbi_set_flip_vertically_on_load(1);
-
+		bool isDDS = (std::filesystem::path(file).extension().u8string() == ".dds");
 		std::string path = m_parser->GetProjectPath(file);
-		int width, height, nrChannels;
-		unsigned char* data = stbi_load(path.c_str(), &width, &height, &nrChannels, STBI_rgb_alpha);
-		
-		if (data == nullptr) {
+
+		int width = 0, height = 0;
+		unsigned char* data = nullptr;
+		dds_image_t ddsImage = nullptr;
+
+		if (isDDS) {
+			ddsImage = dds_load_from_file(path.c_str());
+
+			data = ddsImage->pixels;
+			width = ddsImage->header.width;
+			height = ddsImage->header.height;
+		} else {
+			int nrChannels = 0;
+			stbi_set_flip_vertically_on_load(1);
+			data = stbi_load(path.c_str(), &width, &height, &nrChannels, STBI_rgb_alpha);
+		}
+
+		if (data == nullptr || width == 0 || height == 0 || (isDDS && ddsImage == nullptr)) {
 			Logger::Get().Log("Failed to load a texture " + file + " from file", true);
 			return false;
 		}
@@ -299,7 +331,51 @@ namespace ed {
 		item->TextureSize = glm::ivec2(width, height);
 
 		free(flippedData);
-		stbi_image_free(data);
+
+		if (isDDS)
+			dds_image_free(ddsImage);
+		else
+			stbi_image_free(data);
+
+		return true;
+	}
+	bool ObjectManager::CreateTexture3D(const std::string& file)
+	{
+		Logger::Get().Log("Creating a 3D texture " + file + " ...");
+
+		if (Exists(file)) {
+			Logger::Get().Log("Cannot create a 3D texture " + file + " because that texture is already added to the project", true);
+			return false;
+		}
+
+		std::string path = m_parser->GetProjectPath(file);
+		dds_image_t ddsImage = dds_load_from_file(path.c_str());
+
+		if (ddsImage == nullptr) {
+			Logger::Get().Log("Failed to load a texture " + file + " from file", true);
+			return false;
+		}
+
+		m_parser->ModifyProject();
+
+		ObjectManagerItem* item = new ObjectManagerItem(file, ObjectType::Texture3D);
+		m_items.push_back(item);
+
+		glGenTextures(1, &item->Texture);
+		glBindTexture(GL_TEXTURE_3D, item->Texture);
+		glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MIN_FILTER, item->Texture_MinFilter);
+		glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MAG_FILTER, item->Texture_MagFilter);
+		glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_S, item->Texture_WrapS);
+		glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_T, item->Texture_WrapT);
+		glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_R, item->Texture_WrapR);
+		glTexImage3D(GL_TEXTURE_3D, 0, GL_RGBA, ddsImage->header.width, ddsImage->header.height, ddsImage->header.depth, 0, GL_RGBA, GL_UNSIGNED_BYTE, ddsImage->pixels);
+		glGenerateMipmap(GL_TEXTURE_3D);
+		glBindTexture(GL_TEXTURE_3D, 0);
+
+		item->TextureSize = glm::ivec2(ddsImage->header.width, ddsImage->header.height);
+		item->Depth = ddsImage->header.depth;
+
+		dds_image_free(ddsImage);
 
 		return true;
 	}
@@ -369,8 +445,8 @@ namespace ed {
 
 		ObjectManagerItem* item = new ObjectManagerItem(file, ObjectType::Audio);
 
-		item->SoundBuffer = new sf::SoundBuffer();
-		bool loaded = item->SoundBuffer->loadFromFile(m_parser->GetProjectPath(file));
+		item->Sound = new eng::AudioPlayer();
+		bool loaded = item->Sound->LoadFromFile(m_parser->GetProjectPath(file));
 		if (!loaded) {
 			delete item;
 			ed::Logger::Get().Log("Failed to load an audio file " + file, true);
@@ -389,10 +465,7 @@ namespace ed {
 		glTexImage2D(GL_TEXTURE_2D, 0, GL_R32F, 512, 2, 0, GL_RED, GL_UNSIGNED_BYTE, NULL);
 		glBindTexture(GL_TEXTURE_2D, 0);
 
-		item->Sound = new sf::Sound();
-		item->Sound->setBuffer(*(item->SoundBuffer));
-		item->Sound->setLoop(true);
-		item->Sound->play();
+		item->Sound->Start();
 		item->SoundMuted = false;
 
 		return true;
@@ -606,9 +679,23 @@ namespace ed {
 
 		std::string path = m_parser->GetProjectPath(str);
 		int width, height, nrChannels;
-		unsigned char* data = stbi_load(path.c_str(), &width, &height, &nrChannels, 0);
+		unsigned char* data = nullptr;
+		dds_image_t ddsImage = nullptr;
+
+		bool isDDS = (std::filesystem::path(path).extension().u8string() == ".dds");
+
+		if (!isDDS)
+			stbi_load(path.c_str(), &width, &height, &nrChannels, 0);
+		else {
+			ddsImage = dds_load_from_file(path.c_str());
+
+			data = ddsImage->pixels;
+			width = ddsImage->header.width;
+			height = ddsImage->header.height;
+			nrChannels = 4;
+		}
 		
-		if (data != nullptr) {
+		if (data != nullptr || (isDDS && ddsImage != nullptr)) {
 			m_parser->ModifyProject();
 
 			if (convertToFloat) {
@@ -630,8 +717,10 @@ namespace ed {
 				memcpy(buf->Data, data, buf->Size);
 			}
 
-			stbi_image_free(data);
-
+			if (!isDDS)
+				stbi_image_free(data);
+			else
+				dds_image_free(ddsImage);
 			
 			glBindBuffer(GL_UNIFORM_BUFFER, buf->ID);
 			glBufferData(GL_UNIFORM_BUFFER, buf->Size, buf->Data, GL_STATIC_DRAW); // upload data
@@ -709,10 +798,24 @@ namespace ed {
 		for (int i = 0; i < m_items.size(); i++) {
 			if (m_items[i] == item) {
 				std::string path = m_parser->GetProjectPath(newPath);
-				int width, height, nrChannels;
-				unsigned char* data = stbi_load(path.c_str(), &width, &height, &nrChannels, STBI_rgb_alpha);
+				int width = 0, height = 0, depth = 0;
+				unsigned char* data = nullptr;
+				dds_image_t ddsImage = nullptr;
 
-				if (data == nullptr)
+				bool isDDS = (std::filesystem::path(path).extension().u8string() == ".dds");
+				if (!isDDS) {
+					int nrChannels = 0;
+					stbi_load(path.c_str(), &width, &height, &nrChannels, STBI_rgb_alpha);
+				} else {
+					ddsImage = dds_load_from_file(path.c_str());
+
+					data = ddsImage->pixels;
+					width = ddsImage->header.width;
+					height = ddsImage->header.height;
+					depth = ddsImage->header.depth;
+				}
+		
+				if (data == nullptr || (isDDS && ddsImage == nullptr) || (item->Type == ObjectType::Texture3D && depth == 0))
 					return false;
 
 				if (m_items[i]->Name != newPath) {
@@ -720,34 +823,45 @@ namespace ed {
 					m_parser->ModifyProject();
 				}
 
-				// normal texture
-				glBindTexture(GL_TEXTURE_2D, item->Texture);
-				glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, data);
-				glGenerateMipmap(GL_TEXTURE_2D);
-				glBindTexture(GL_TEXTURE_2D, 0);
+				if (item->Type == ObjectType::Texture3D) {
+					// normal texture
+					glBindTexture(GL_TEXTURE_3D, item->Texture);
+					glTexImage3D(GL_TEXTURE_3D, 0, GL_RGBA, width, height, depth, 0, GL_RGBA, GL_UNSIGNED_BYTE, data);
+					glGenerateMipmap(GL_TEXTURE_3D);
+					glBindTexture(GL_TEXTURE_3D, 0);
+				} else {
+					// normal texture
+					glBindTexture(GL_TEXTURE_2D, item->Texture);
+					glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, data);
+					glGenerateMipmap(GL_TEXTURE_2D);
+					glBindTexture(GL_TEXTURE_2D, 0);
 
-				// flipped texture
-				unsigned char* flippedData = (unsigned char*)malloc(width * height * 4);
-				for (int x = 0; x < width; x++) {
-					for (int y = 0; y < height; y++) {
-						flippedData[(y * width + x) * 4 + 0] = data[((height - y - 1) * width + x) * 4 + 0];
-						flippedData[(y * width + x) * 4 + 1] = data[((height - y - 1) * width + x) * 4 + 1];
-						flippedData[(y * width + x) * 4 + 2] = data[((height - y - 1) * width + x) * 4 + 2];
-						flippedData[(y * width + x) * 4 + 3] = data[((height - y - 1) * width + x) * 4 + 3];
+					// flipped texture
+					unsigned char* flippedData = (unsigned char*)malloc(width * height * 4);
+					for (int x = 0; x < width; x++) {
+						for (int y = 0; y < height; y++) {
+							flippedData[(y * width + x) * 4 + 0] = data[((height - y - 1) * width + x) * 4 + 0];
+							flippedData[(y * width + x) * 4 + 1] = data[((height - y - 1) * width + x) * 4 + 1];
+							flippedData[(y * width + x) * 4 + 2] = data[((height - y - 1) * width + x) * 4 + 2];
+							flippedData[(y * width + x) * 4 + 3] = data[((height - y - 1) * width + x) * 4 + 3];
+						}
 					}
+					glBindTexture(GL_TEXTURE_2D, item->FlippedTexture);
+					glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, flippedData);
+					glGenerateMipmap(GL_TEXTURE_2D);
+					glBindTexture(GL_TEXTURE_2D, 0);
+
+					free(flippedData);
 				}
 
-				glGenTextures(1, &item->FlippedTexture);
-				glBindTexture(GL_TEXTURE_2D, item->FlippedTexture);
-				glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, flippedData);
-				glGenerateMipmap(GL_TEXTURE_2D);
-				glBindTexture(GL_TEXTURE_2D, 0);
-
 				item->TextureSize = glm::ivec2(width, height);
+				item->Depth = depth;
 
-				free(flippedData);
-				stbi_image_free(data);
-				
+				if (!isDDS)
+					stbi_image_free(data);
+				else
+					dds_image_free(ddsImage);
+
 				return true;
 			}
 		}
@@ -758,16 +872,13 @@ namespace ed {
 	void ObjectManager::Pause(bool pause)
 	{
 		for (auto& it : m_items) {
-			if (it->SoundBuffer == nullptr)
+			if (it->Sound == nullptr)
 				continue;
 
-			// get samples and fft data
-			sf::Sound* player = it->Sound;
-			
 			if (pause)
-				player->pause();
+				it->Sound->Stop();
 			else
-				player->play();
+				it->Sound->Start();
 		}
 	}
 	void ObjectManager::OnEvent(const SDL_Event& e)
@@ -850,21 +961,17 @@ namespace ed {
 	{
 		for (auto& it : m_items) {
 			// update audio items
-			if (it->SoundBuffer != nullptr) {
+			if (it->Type == ed::ObjectType::Audio && it->Sound != nullptr) {
 				// get samples and fft data
-				sf::Sound* player = it->Sound;
-				int channels = it->SoundBuffer->getChannelCount();
-				int perChannel = it->SoundBuffer->getSampleCount() / channels;
-				int curSample = (int)((player->getPlayingOffset().asSeconds() / it->SoundBuffer->getDuration().asSeconds()) * perChannel);
+				memset(&m_samplesTempBuffer, 0, sizeof(short) * 1024);
+				it->Sound->GetSamples(m_samplesTempBuffer);
+				double* fftData = m_audioAnalyzer.FFT(m_samplesTempBuffer);
 
-				double* fftData = m_audioAnalyzer.FFT(*(it->SoundBuffer), curSample);
-
-				const sf::Int16* samples = it->SoundBuffer->getSamples();
 				for (int i = 0; i < ed::AudioAnalyzer::SampleCount; i++) {
-					sf::Int16 s = samples[std::min<int>(i + curSample, perChannel)];
+					short s = (m_samplesTempBuffer[i * 2] + m_samplesTempBuffer[i * 2 + 1]) / 2;
 					float sf = (float)s / (float)INT16_MAX;
 
-					m_audioTempTexData[i] = fftData[i / 2];
+					m_audioTempTexData[i] = fftData[i/2];
 					m_audioTempTexData[i + ed::AudioAnalyzer::SampleCount] = sf * 0.5f + 0.5f;
 				}
 
@@ -921,6 +1028,9 @@ namespace ed {
 
 	void ObjectManager::Bind(ObjectManagerItem* item, PipelineItem* pass)
 	{
+		if (item == nullptr)
+			return; // ProjectParser::m_parseV2()
+
 		if (IsBound(item, pass) == -1) {
 			m_parser->ModifyProject();
 
@@ -931,6 +1041,9 @@ namespace ed {
 	}
 	void ObjectManager::Unbind(ObjectManagerItem* item, PipelineItem* pass)
 	{
+		if (item == nullptr)
+			return; // ProjectParser::m_parseV2()
+
 		std::vector<GLuint>& srvs = m_binds[pass];
 
 		GLuint glObject = this->m_getGLObject(item);
@@ -959,6 +1072,9 @@ namespace ed {
 
 	void ObjectManager::BindUniform(ObjectManagerItem* item, PipelineItem* pass)
 	{
+		if (item == nullptr)
+			return; // ProjectParser::m_parseV2()
+
 		if (IsUniformBound(item, pass) == -1) {
 			GLuint glObject = this->m_getGLObject(item);
 			
@@ -969,6 +1085,9 @@ namespace ed {
 	}
 	void ObjectManager::UnbindUniform(ObjectManagerItem* item, PipelineItem* pass)
 	{
+		if (item == nullptr)
+			return; // ProjectParser::m_parseV2()
+
 		std::vector<GLuint>& ubos = m_uniformBinds[pass];
 
 		GLuint glObject = this->m_getGLObject(item);
@@ -1145,19 +1264,31 @@ namespace ed {
 		ObjectManagerItem* item = Get(name);
 
 		if (item != nullptr) {
-			glBindTexture(GL_TEXTURE_2D, item->Texture);
-			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, item->Texture_MinFilter);
-			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, item->Texture_MagFilter);
-			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, item->Texture_WrapS);
-			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, item->Texture_WrapT);
+			if (item->Type == ed::ObjectType::Texture) {
+				glBindTexture(GL_TEXTURE_2D, item->Texture);
+				glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, item->Texture_MinFilter);
+				glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, item->Texture_MagFilter);
+				glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, item->Texture_WrapS);
+				glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, item->Texture_WrapT);
 
-			glBindTexture(GL_TEXTURE_2D, item->FlippedTexture);
-			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, item->Texture_MinFilter);
-			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, item->Texture_MagFilter);
-			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, item->Texture_WrapS);
-			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, item->Texture_WrapT);
+				glBindTexture(GL_TEXTURE_2D, item->FlippedTexture);
+				glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, item->Texture_MinFilter);
+				glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, item->Texture_MagFilter);
+				glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, item->Texture_WrapS);
+				glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, item->Texture_WrapT);
 
-			glBindTexture(GL_TEXTURE_2D, 0);
+				glBindTexture(GL_TEXTURE_2D, 0);
+			}
+
+			else if (item->Type == ed::ObjectType::Texture3D) {
+				glBindTexture(GL_TEXTURE_3D, item->Texture);
+				glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MIN_FILTER, item->Texture_MinFilter);
+				glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MAG_FILTER, item->Texture_MagFilter);
+				glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_S, item->Texture_WrapS);
+				glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_T, item->Texture_WrapT);
+				glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_R, item->Texture_WrapR);
+				glBindTexture(GL_TEXTURE_3D, 0);
+			}
 		}
 	}
 
@@ -1165,14 +1296,14 @@ namespace ed {
 	{
 		if (item != nullptr) {
 			item->SoundMuted = true;
-			item->Sound->setVolume(0);
+			item->Sound->SetVolume(0);
 		}
 	}
 	void ObjectManager::Unmute(ObjectManagerItem* item)
 	{
 		if (item != nullptr) {
 			item->SoundMuted = false;
-			item->Sound->setVolume(100);
+			item->Sound->SetVolume(1.0f);
 		}
 	}
 

@@ -1,9 +1,7 @@
 #pragma once
 #include <string>
 #include <glm/glm.hpp>
-
-#include <SFML/Audio/Sound.hpp>
-#include <SFML/Audio/SoundBuffer.hpp>
+#include <SHADERed/Engine/AudioPlayer.h>
 
 #include <GL/glew.h>
 #if defined(__APPLE__)
@@ -23,7 +21,8 @@ namespace ed {
 		Texture,
 		Image3D,
 		KeyboardTexture,
-		PluginObject
+		PluginObject,
+		Texture3D
 	};
 
 	/* object information */
@@ -88,6 +87,7 @@ namespace ed {
 			Type = type;
 
 			TextureSize = glm::ivec2(0, 0);
+			Depth = 1;
 			Texture = 0;
 			FlippedTexture = 0;
 			Texture_VFlipped = false;
@@ -95,8 +95,8 @@ namespace ed {
 			Texture_MagFilter = GL_NEAREST;
 			Texture_WrapS = GL_REPEAT;
 			Texture_WrapT = GL_REPEAT;
+			Texture_WrapR = GL_REPEAT;
 			CubemapPaths.clear();
-			SoundBuffer = nullptr;
 			Sound = nullptr;
 			SoundMuted = false;
 			RT = nullptr;
@@ -120,13 +120,8 @@ namespace ed {
 				glDeleteTextures(1, &RT->DepthStencilBuffer);
 				delete RT;
 			}
-			if (Sound != nullptr) {
-				if (Sound->getStatus() == sf::Sound::Playing)
-					Sound->stop();
-
-				delete SoundBuffer;
+			if (Sound != nullptr)
 				delete Sound;
-			}
 			if (Plugin != nullptr)
 				delete Plugin;
 
@@ -139,14 +134,14 @@ namespace ed {
 		ObjectType Type;
 
 		glm::ivec2 TextureSize;
+		int Depth;
 		GLuint Texture, FlippedTexture;
 		std::vector<std::string> CubemapPaths;
 
 		bool Texture_VFlipped;
-		GLuint Texture_MinFilter, Texture_MagFilter, Texture_WrapS, Texture_WrapT;
+		GLuint Texture_MinFilter, Texture_MagFilter, Texture_WrapS, Texture_WrapT, Texture_WrapR;
 
-		sf::SoundBuffer* SoundBuffer;
-		sf::Sound* Sound;
+		eng::AudioPlayer* Sound;
 		bool SoundMuted;
 
 		RenderTextureObject* RT;

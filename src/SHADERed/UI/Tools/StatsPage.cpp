@@ -1,9 +1,8 @@
 #include <SHADERed/UI/Tools/StatsPage.h>
 #include <SHADERed/Objects/ThemeContainer.h>
+#include <SHADERed/Objects/ShaderCompiler.h>
 #include <SHADERed/Objects/Settings.h>
 #include <imgui/imgui.h>
-#include <spirv-tools/libspirv.h>
-#include <spirv-tools/optimizer.hpp>
 #include <sstream>
 
 namespace ed {
@@ -32,9 +31,10 @@ namespace ed {
 	void StatsPage::Refresh(PipelineItem* item, ShaderStage stage)
 	{
 		m_spv.clear();
-		std::string disassembly = "";
+		if (item == nullptr)
+			return;
 
-		spvtools::SpirvTools core(SPV_ENV_UNIVERSAL_1_3);
+		std::string disassembly = "";
 
 		if (item->Type == PipelineItem::ItemType::ShaderPass) {
 			pipe::ShaderPass* pass = (pipe::ShaderPass*)item->Data;
@@ -44,6 +44,10 @@ namespace ed {
 				m_spv = pass->PSSPV;
 			else if (stage == ShaderStage::Geometry)
 				m_spv = pass->GSSPV;
+			else if (stage == ShaderStage::TessellationControl)
+				m_spv = pass->TCSSPV;
+			else if (stage == ShaderStage::TessellationEvaluation)
+				m_spv = pass->TESSPV;
 		}
 		else if (item->Type == PipelineItem::ItemType::ComputePass) {
 			pipe::ComputePass* pass = (pipe::ComputePass*)item->Data;
@@ -59,9 +63,9 @@ namespace ed {
 		}
 
 		if (!m_spv.empty()) {
-			bool disResult = core.Disassemble(m_spv, &disassembly, SPV_BINARY_TO_TEXT_OPTION_INDENT | SPV_BINARY_TO_TEXT_OPTION_FRIENDLY_NAMES);
+			bool res = ShaderCompiler::DisassembleSPIRV(m_spv, disassembly);
 
-			if (disResult)
+			if (res)
 				m_parse(disassembly);
 
 			m_info.Parse(m_spv);

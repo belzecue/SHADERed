@@ -32,6 +32,7 @@ namespace ed {
 		Pipeline,
 		Properties,
 		PixelInspect,
+		Profiler,
 		DebugWatch,
 		DebugValues,
 		DebugFunctionStack,
@@ -40,8 +41,10 @@ namespace ed {
 		DebugAuto,
 		DebugImmediate,
 		DebugGeometryOutput,
+		DebugTessControlOutput,
 		Options,
-		ObjectPreview
+		ObjectPreview,
+		FrameAnalysis,
 	};
 
 	class GUIManager {
@@ -64,6 +67,7 @@ namespace ed {
 
 		void CreateNewShaderPass();
 		void CreateNewTexture();
+		void CreateNewTexture3D();
 		inline void CreateNewCubemap() { m_isCreateCubemapOpened = true; }
 		void CreateNewAudio();
 		inline void CreateNewRenderTexture() { m_isCreateRTOpened = true; }
@@ -77,8 +81,10 @@ namespace ed {
 
 		inline bool IsPerformanceMode() { return m_performanceMode; }
 		inline void SetPerformanceMode(bool mode) { m_perfModeFake = mode; }
-		inline void SetMinimalMode(bool mode) { m_minimalMode = mode; }
 		inline bool IsMinimalMode() { return m_minimalMode; }
+		inline void SetMinimalMode(bool mode) { m_minimalMode = mode; }
+		inline bool IsFocusMode() { return m_focusMode; }
+		inline void SetFocusMode(bool mode) { m_focusMode = mode; }
 
 		void AddNotification(int id, const char* text, const char* btnText, std::function<void(int, IPlugin1*)> fn, IPlugin1* plugin = nullptr);
 
@@ -98,8 +104,6 @@ namespace ed {
 		void m_renderPopups(float delta);
 
 		void m_setupShortcuts();
-
-		void m_imguiHandleEvent(const SDL_Event& e);
 
 		void m_autoUniforms(ShaderVariableContainer& vars, SPIRVParser& spv, std::vector<std::string>& uniformList);
 		void m_deleteUnusedUniforms(ShaderVariableContainer& vars, const std::vector<std::string>& spv);
@@ -125,12 +129,19 @@ namespace ed {
 		UIView* m_browseOnline;
 		UIView* m_objectPrev;
 		UIView* m_geometryOutput;
+		UIView* m_frameAnalysis;
+		UIView* m_tessControlOutput;
 
 		std::string m_cachedFont;
 		int m_cachedFontSize;
 		bool m_fontNeedsUpdate;
 
 		bool m_minimalMode;
+		bool m_focusMode, m_focusModeTemp;
+		void m_renderFocusMode();
+		void m_renderTextEditorFocusMode(const std::string& name, void* item, ShaderStage stage);
+
+		void m_renderDAPMode(float delta);
 
 		bool m_cacheProjectModified;
 		bool m_recompiledAll;

@@ -6,7 +6,7 @@
 #include <SHADERed/Objects/Settings.h>
 #include <imgui/imgui.h>
 #include <imgui/imgui_internal.h>
-#include <stb/stb_image.h>
+#include <misc/stb_image.h>
 
 namespace ed {
 	BrowseOnlineUI::BrowseOnlineUI(GUIManager* ui, ed::InterfaceManager* objects, const std::string& name, bool visible)
@@ -102,7 +102,13 @@ namespace ed {
 				m_onlinePluginPage = 0;
 			else
 				m_onlineThemePage = 0;
-			m_onlineSearchShaders();
+
+			if (m_onlineIsShader)
+				m_onlineSearchShaders();
+			else if (m_onlineIsPlugin)
+				m_onlineSearchPlugins();
+			else
+				m_onlineSearchThemes();
 		}
 
 		bool hasNext = true;
